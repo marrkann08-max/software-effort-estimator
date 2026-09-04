@@ -1,12 +1,12 @@
 import streamlit as st
 import numpy as np
-import pickle, os, warnings
+import pickle, os
 
+from app_metrics import model_metrics
 from validation import prediction_interval
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-warnings.filterwarnings("ignore")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -150,14 +150,19 @@ if not os.path.exists(_path):
     st.stop()
 
 art         = load(os.path.getmtime(_path))
+METRICS     = model_metrics("github")
+NESTED      = METRICS["nested_cv"]
+POPULARITY  = METRICS["popularity_holdout"]
+FAHP        = METRICS["fahp_comparison"]
+PROXY       = METRICS["effort_proxy"]
 gh_model    = art["model"]
 gh_scaler_X = art["scaler_X"]
 gh_scaler_y = art["scaler_y"]
 gh_kernel_w = art["kernel_w"]
 gh_fahp_w   = art["fahp_weights"]
 gh_feat     = art["feature_names"]
-gh_pi_q10   = art.get("pi_q10", art.get("pi_lo_pct", -0.25))
-gh_pi_q90   = art.get("pi_q90", art.get("pi_hi_pct", 0.33))
+gh_pi_q10   = METRICS["prediction_interval"]["q10"]
+gh_pi_q90   = METRICS["prediction_interval"]["q90"]
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -224,20 +229,16 @@ p_log = gh_scaler_y.inverse_transform(p_sc.reshape(-1, 1))[0, 0]
 effort = max(float(np.expm1(p_log)), 1.0)
 lo, hi = prediction_interval(effort, gh_pi_q10, gh_pi_q90, minimum=1.0)
 
-_t_mmre   = art.get("temporal_mmre", None)
-_t_pred25 = art.get("temporal_pred25", None)
-_t_te     = art.get("temporal_test_n", "—")
-
 # ── Page header ───────────────────────────────────────────────────────────────
 st.markdown(f"""
 <div class="page-header">
   <div class="page-title">GitHub-Trained Effort Model</div>
-  <div class="page-subtitle">FAHP + Weighted-Kernel SVR &nbsp;·&nbsp; Trained on {art['n_projects']} real GitHub projects (2021–present)</div>
+  <div class="page-subtitle">FAHP + Weighted-Kernel SVR &nbsp;·&nbsp; Trained on {METRICS['n']} open-source GitHub projects</div>
   <div>
-    <span class="stat-pill-blue">LOO-MMRE {art['loo_mmre']:.4f}</span>
-    <span class="stat-pill-green">PRED(25) {art['pred25']*100:.0f}%</span>
-    {f'<span class="stat-pill-blue">Temporal MMRE {_t_mmre:.4f}</span>' if _t_mmre else ''}
-    <span class="stat-pill">n={art['n_projects']} repos</span>
+    <span class="stat-pill-blue">Nested-CV MMRE {NESTED['mmre']:.4f}</span>
+    <span class="stat-pill-green">PRED(25) {NESTED['pred25']*100:.0f}%</span>
+    <span class="stat-pill-blue">Popularity hold-out {POPULARITY['mmre']:.4f}</span>
+    <span class="stat-pill">n={METRICS['n']} repos</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -248,8 +249,9 @@ st.markdown("""<div class='explain-note'>
     Same methodology as the COCOMO-81 model — FAHP feature weighting + weighted-kernel SVR —
     but trained on <strong>real GitHub open-source projects</strong> using signals your team
     already generates: PR review time, commit frequency, team size, test coverage.
-    Effort is proxied from commit author-days. Open-source volunteers differ from paid engineers —
-    this is a proof of concept. <strong>With your company's actual Jira-tracked hours, MMRE would be lower.</strong>
+    Effort is proxied from sampled commit author-days. Open-source volunteers differ from paid engineers,
+    so this is a proof of concept. Company outcomes may be more representative, but their accuracy must be
+    measured with held-out completed projects rather than assumed.
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -264,29 +266,39 @@ r1.markdown(f"""<div class='metric-card'>
     <div class='metric-range'>80% range: {lo:.0f}–{hi:.0f} AM</div>
 </div>""", unsafe_allow_html=True)
 r2.markdown(f"""<div class='metric-card'>
-    <div class='metric-label'>LOO-MMRE</div>
-    <div class='metric-value' style='color:#2563EB;font-size:1.8rem;'>{art['loo_mmre']:.4f}</div>
-    <div class='metric-unit'>leave-one-out CV</div>
-    <div class='metric-range'>PRED(25) = {art['pred25']*100:.0f}%</div>
+    <div class='metric-label'>Nested-CV MMRE</div>
+    <div class='metric-value' style='color:#2563EB;font-size:1.8rem;'>{NESTED['mmre']:.4f}</div>
+    <div class='metric-unit'>10 outer / 5 inner folds</div>
+    <div class='metric-range'>PRED(25) = {NESTED['pred25']*100:.0f}%</div>
 </div>""", unsafe_allow_html=True)
 r3.markdown(f"""<div class='metric-card'>
-    <div class='metric-label'>Temporal MMRE</div>
-    <div class='metric-value' style='color:#15803d;font-size:1.8rem;'>{f"{_t_mmre:.4f}" if _t_mmre else "—"}</div>
-    <div class='metric-unit'>train old → test new</div>
-    <div class='metric-range'>PRED(25) = {f"{_t_pred25*100:.0f}%" if _t_pred25 else "—"} · n_test={_t_te}</div>
+    <div class='metric-label'>Popularity Hold-out</div>
+    <div class='metric-value' style='color:#15803d;font-size:1.8rem;'>{POPULARITY['mmre']:.4f}</div>
+    <div class='metric-unit'>high-star train → low-star test</div>
+    <div class='metric-range'>PRED(25) = {POPULARITY['pred25']*100:.0f}% · n_test={POPULARITY['test_n']}</div>
 </div>""", unsafe_allow_html=True)
 r4.markdown(f"""<div class='metric-card'>
-    <div class='metric-label'>FAHP Improvement</div>
-    <div class='metric-value' style='color:#7c3aed;font-size:1.8rem;'>{art['fahp_improve_pct']:.0f}%</div>
-    <div class='metric-unit'>vs no FAHP weighting</div>
-    <div class='metric-range'>Ablation: {art['ablation_mmre']:.4f} → {art['loo_mmre']:.4f}</div>
+    <div class='metric-label'>FAHP Comparison</div>
+    <div class='metric-value' style='color:#7c3aed;font-size:1.8rem;'>{FAHP['effect_pct']:+.1f}%</div>
+    <div class='metric-unit'>lower MMRE in matched nested CV</div>
+    <div class='metric-range'>Unweighted {FAHP['unweighted_mmre']:.4f} → weighted {FAHP['weighted_mmre']:.4f}</div>
 </div>""", unsafe_allow_html=True)
 r5.markdown(f"""<div class='metric-card'>
     <div class='metric-label'>Training Repos</div>
-    <div class='metric-value' style='font-size:1.8rem;'>{art['n_projects']}</div>
+    <div class='metric-value' style='font-size:1.8rem;'>{METRICS['n']}</div>
     <div class='metric-unit'>open-source projects</div>
-    <div class='metric-range'>GitHub API, 2021–present</div>
+    <div class='metric-range'>GitHub API sample</div>
 </div>""", unsafe_allow_html=True)
+
+st.warning(
+    f"The effort proxy samples at most {PROXY['commit_sample_limit']:,} commits per repository, "
+    f"approximately {PROXY['approximate_cap_author_months']:.0f} author-months. Predictions above "
+    "that cap are extrapolations and have not been validated."
+)
+st.info(
+    "Popularity hold-out is not temporal validation: repository stars are not a time variable. "
+    "Hyperparameters were selected only on the high-star training partition."
+)
 
 # ── Confidence band ───────────────────────────────────────────────────────────
 st.markdown("<div class='section-header'>80% Prediction Interval</div>", unsafe_allow_html=True)
@@ -303,8 +315,8 @@ ax_cb.barh([0], [hi - lo], left=[lo], height=row_h, color="none", edgecolor="#25
 ax_cb.plot([effort], [0], marker="|", markersize=20, color="#2563EB", markeredgewidth=2.5, linewidth=0)
 ax_cb.text(lo,     row_h * 0.65, f"{lo:.0f}",     ha="center", va="bottom", fontsize=7.5, color="#71717A", fontfamily="monospace")
 ax_cb.text(hi,     row_h * 0.65, f"{hi:.0f}",     ha="center", va="bottom", fontsize=7.5, color="#71717A", fontfamily="monospace")
-ax_cb.text(effort, row_h * 0.65, f"{effort:.0f}", ha="center", va="bottom", fontsize=8,   color="#2563EB", fontfamily="monospace", fontweight="600")
-ax_cb.text(x_min_cb, 0, "Estimate", ha="right", va="center", fontsize=8, fontweight="600", color="#2563EB")
+ax_cb.text(effort, row_h * 0.65, f"{effort:.0f}", ha="center", va="bottom", fontsize=8, color="#2563EB", fontfamily="monospace", fontweight="bold")
+ax_cb.text(x_min_cb, 0, "Estimate", ha="right", va="center", fontsize=8, fontweight="bold", color="#2563EB")
 ax_cb.set_yticks([])
 ax_cb.set_xlabel("Author-months", fontsize=8, color="#71717A")
 for sp in ["top", "right", "left"]: ax_cb.spines[sp].set_visible(False)
@@ -313,7 +325,7 @@ ax_cb.tick_params(labelsize=7.5, colors="#71717A")
 ax_cb.grid(axis="x", color="#F4F4F5", linewidth=0.7, zorder=0)
 ax_cb.set_ylim(-row_h * 0.8, row_h * 1.4)
 plt.tight_layout(pad=1.2)
-st.pyplot(fig_cb, use_container_width=True)
+st.pyplot(fig_cb, width="stretch")
 plt.close(fig_cb)
 
 # ── FAHP weights chart ────────────────────────────────────────────────────────
@@ -345,7 +357,7 @@ ax_fw.tick_params(axis="y", labelsize=8.5, colors="#27272A")
 ax_fw.tick_params(axis="x", labelsize=7.5, colors="#71717A")
 ax_fw.grid(axis="x", color="#F0F0F0", linewidth=0.7)
 plt.tight_layout()
-st.pyplot(fig_fw, use_container_width=True)
+st.pyplot(fig_fw, width="stretch")
 plt.close(fig_fw)
 
 st.markdown("""<div class='explain-note' style='margin-top:0.5rem;'>

@@ -5,8 +5,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import pickle, os, warnings
+import pickle, os
 
+from app_metrics import model_metrics
 from validation import prediction_interval
 
 # Root directory — pages/ is one level below the repo root
@@ -16,10 +17,8 @@ try:
     SHAP_AVAILABLE = True
 except ImportError:
     SHAP_AVAILABLE = False
-warnings.filterwarnings("ignore")
-
 plt.rcParams.update({
-    "font.family":        ["Inter", "Helvetica Neue", "Arial", "sans-serif"],
+    "font.family":        "DejaVu Sans",
     "font.size":          9,
     "axes.spines.top":    False,
     "axes.spines.right":  False,
@@ -420,18 +419,12 @@ kernel_w = art.get("kernel_w", np.sqrt(fahp_w))
 X_train  = art["X_train"]
 PI_Q10   = art.get("pi_q10", art.get("pi_lo_pct", -0.46))
 PI_Q90   = art.get("pi_q90", art.get("pi_hi_pct", 0.56))
-N_81     = art.get("n_cocomo81", 63)
-N_93     = art.get("n_nasa93",   0)
-
-# ── Load GitHub model (optional) ──────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
-def load_github_model(mtime: float):
-    path = os.path.join(ROOT, "github_model.pkl")
-    with open(path, "rb") as f:
-        return pickle.load(f)
-
-_gh_path = os.path.join(ROOT, "github_model.pkl")
-gh_art   = load_github_model(os.path.getmtime(_gh_path)) if os.path.exists(_gh_path) else None
+COCOMO_METRICS = model_metrics("cocomo81")
+GITHUB_METRICS = model_metrics("github")
+N_81 = COCOMO_METRICS["n"]
+N_93 = COCOMO_METRICS["external_nasa93"]["n"]
+PI_Q10 = COCOMO_METRICS["prediction_interval"]["q10"]
+PI_Q90 = COCOMO_METRICS["prediction_interval"]["q90"]
 _gh_csv_path = os.path.join(ROOT, "github_projects.csv")
 
 FEATURES = [
@@ -700,7 +693,7 @@ def plot_confidence_band(effort, q10, q90, ai_effort=None):
         # Row label — left of the chart (y-axis label replacement)
         ax.text(ax.get_xlim()[0] if ax.get_xlim()[0] != 0 else band_lo * 0.55,
                 y, label, ha="right", va="center",
-                fontsize=8, fontweight="600", color=color, fontfamily="sans-serif")
+                fontsize=8, fontweight="bold", color=color, fontfamily="sans-serif")
 
     # Compute xlim first so label placement is stable
     all_vals = [lo, hi, effort]
@@ -748,7 +741,7 @@ def plot_ai_comparison(effort, ai_effort, ai_lo, ai_hi, ai_label):
     for bar, val in zip(bars, values):
         ax.text(val + effort * 0.02, bar.get_y() + bar.get_height() / 2,
                 f"{val:.0f} PM", va="center",
-                fontfamily="monospace", fontsize=9, fontweight="600", color="#09090B")
+                fontfamily="monospace", fontsize=9, fontweight="bold", color="#09090B")
     ax.text(ai_hi + effort * 0.02,
             bars[1].get_y() + bars[1].get_height() / 2 - 0.22,
             f"{ai_lo:.0f}–{ai_hi:.0f} range",
@@ -923,7 +916,7 @@ with st.sidebar:
 
     st.markdown("<hr style='border:none;border-top:1px solid #27272A;margin:0.8rem 0;'>",
                 unsafe_allow_html=True)
-    if st.button("▶  Estimate Effort", use_container_width=True, type="primary"):
+    if st.button("▶  Estimate Effort", width="stretch", type="primary"):
         st.rerun()
 
     st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
@@ -941,21 +934,23 @@ ratings = dict(
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
-_pred25     = art.get("pred25", None)
-_pred50     = art.get("pred50", None)
-_abl_mmre   = art.get("ablation_mmre", None)
-_fahp_imp   = art.get("fahp_improve_pct", None)
-_mode_mmre  = art.get("mode_mmre", {})
-_n93_mmre   = art.get("nasa93_mmre", None)
-_n93_pred25 = art.get("nasa93_pred25", None)
-_n93_n      = art.get("n_nasa93_valid", 0)
+_nested      = COCOMO_METRICS["nested_cv"]
+_pred25      = _nested["pred25"]
+_pred50      = _nested["pred50"]
+_abl_mmre    = COCOMO_METRICS["fahp_comparison"]["unweighted_mmre"]
+_fahp_imp    = COCOMO_METRICS["fahp_comparison"]["effect_pct"]
+_mode_mmre   = COCOMO_METRICS["mode_metrics"]
+_n93         = COCOMO_METRICS["external_nasa93"]
+_n93_mmre    = _n93["mmre"]
+_n93_pred25  = _n93["pred25"]
+_n93_n       = _n93["n"]
 
 st.markdown(f"""
 <div class="page-header">
   <div class="page-title"> &nbsp;Software Effort Estimator</div>
   <div class="page-subtitle">Explainable AI for software project planning &nbsp;&middot;&nbsp; FAHP &nbsp;&middot;&nbsp; Weighted-Kernel SVR &nbsp;&middot;&nbsp; SHAP</div>
   <div>
-    <span class="stat-pill-blue">LOO-MMRE {art['loo_mmre']:.4f}</span>
+    <span class="stat-pill-blue">Nested-CV MMRE {_nested['mmre']:.4f}</span>
     {f'<span class="stat-pill-green">PRED(25) {_pred25*100:.0f}%</span>' if _pred25 else ''}
     <span class="stat-pill-green">n={N_81} COCOMO-81</span>
     {f'<span class="stat-pill-dark">NASA-93 MMRE {_n93_mmre:.3f}</span>' if _n93_mmre else ''}
@@ -967,28 +962,22 @@ st.markdown(f"""
 
 
 # ── Research story: MMRE trajectory table ─────────────────────────────────────
-_gh_mmre   = gh_art["loo_mmre"]   if gh_art else None
-_gh_pred25 = gh_art["pred25"]     if gh_art else None
-_gh_n      = gh_art["n_projects"] if gh_art else None
+_gh_nested = GITHUB_METRICS["nested_cv"]
+_gh_n = GITHUB_METRICS["n"]
 
-cocomo_row = f"<tr><td><strong>COCOMO-81</strong> (1981 benchmark)</td><td>63</td><td style='font-family:monospace;font-weight:700;color:#2E7D32;'>{art['loo_mmre']:.4f}</td><td style='font-family:monospace;'>{_pred25*100:.0f}%</td><td>LOO cross-validation</td></tr>" if _pred25 else ""
-_gh_t_mmre   = gh_art.get("temporal_mmre",   None) if gh_art else None
-_gh_t_pred25 = gh_art.get("temporal_pred25", None) if gh_art else None
-_gh_disp_mmre   = f"{_gh_t_mmre:.4f}"   if _gh_t_mmre   else (f"{_gh_mmre:.4f}"   if _gh_mmre   else "—")
-_gh_disp_pred25 = f"{_gh_t_pred25*100:.0f}%" if _gh_t_pred25 else (f"{_gh_pred25*100:.0f}%" if _gh_pred25 else "—")
-_gh_val_label   = "Temporal split (rigorous)" if _gh_t_mmre else "LOO cross-validation"
+cocomo_row = f"<tr><td><strong>COCOMO-81</strong> (1981 benchmark)</td><td>{N_81}</td><td style='font-family:monospace;font-weight:700;color:#2E7D32;'>{_nested['mmre']:.4f}</td><td style='font-family:monospace;'>{_pred25*100:.0f}%</td><td>Nested 10×5 CV</td></tr>"
 github_row = (f"<tr><td><strong>GitHub open-source</strong> (2021&#8211;present)</td>"
               f"<td>{_gh_n}</td>"
-              f"<td style='font-family:monospace;font-weight:700;color:#2563EB;'>{_gh_disp_mmre}</td>"
-              f"<td style='font-family:monospace;'>{_gh_disp_pred25}</td>"
-              f"<td>{_gh_val_label}</td></tr>") if _gh_mmre else ""
-company_row = "<tr><td><strong>Your company data</strong></td><td>—</td><td style='font-family:monospace;color:#BF6000;font-weight:700;'>lower ↓</td><td style='font-family:monospace;color:#BF6000;'>higher ↑</td><td>The Mitacs deliverable</td></tr>"
+              f"<td style='font-family:monospace;font-weight:700;color:#2563EB;'>{_gh_nested['mmre']:.4f}</td>"
+              f"<td style='font-family:monospace;'>{_gh_nested['pred25']*100:.0f}%</td>"
+              f"<td>Nested 10×5 CV</td></tr>")
+company_row = "<tr><td><strong>Your company data</strong></td><td>—</td><td style='font-family:monospace;color:#BF6000;'>not measured</td><td style='font-family:monospace;color:#BF6000;'>not measured</td><td>Requires completed-project outcomes</td></tr>"
 
 st.markdown(f"""
 <div style='background:#fff;border:1px solid #e2e2e2;border-radius:8px;padding:1rem 1.2rem;margin-bottom:0.6rem;'>
   <div style='font-size:0.65rem;letter-spacing:0.1em;text-transform:uppercase;font-weight:700;color:#888;margin-bottom:0.6rem;'>Research Trajectory — Why Company Data Matters</div>
   <table class='data-table'>
-    <thead><tr><th>Dataset</th><th>n</th><th>LOO-MMRE</th><th>PRED(25)</th><th>Validation</th></tr></thead>
+    <thead><tr><th>Dataset</th><th>n</th><th>Nested-CV MMRE</th><th>PRED(25)</th><th>Validation</th></tr></thead>
     <tbody>{cocomo_row}{github_row}{company_row}</tbody>
   </table>
 </div>
@@ -1061,7 +1050,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("<div class='section-header'>80% Prediction Interval &nbsp;·&nbsp; empirical, nested outer folds</div>", unsafe_allow_html=True)
 _fig_cb = plot_confidence_band(effort, PI_Q10, PI_Q90,
           ai_effort=ai_effort if ai_using else None)
-_ = st.pyplot(_fig_cb, use_container_width=True)
+_ = st.pyplot(_fig_cb, width="stretch")
 plt.close(_fig_cb)
 
 # ── Executive Summary ─────────────────────────────────────────────────────────
@@ -1097,7 +1086,7 @@ else:
     tab1, tab2, tab3 = st.tabs(["Feature Contributions", "FAHP vs SHAP", "Waterfall"])
     with tab1:
         _fig_bar = plot_shap_bar(sv_pm, effort)
-        _ = st.pyplot(_fig_bar, use_container_width=True); plt.close(_fig_bar)
+        _ = st.pyplot(_fig_bar, width="stretch"); plt.close(_fig_bar)
         st.markdown("""<div class='insight-note' style='margin-top:0.4rem;'>
             <strong>Reading SHAP values:</strong> Each bar is the contribution of that feature
             relative to the model's <em>average prediction across all 63 training projects</em>
@@ -1107,10 +1096,10 @@ else:
         </div>""", unsafe_allow_html=True)
     with tab2:
         _fig_fvs = plot_fahp_vs_shap(sv_pm)
-        _ = st.pyplot(_fig_fvs, use_container_width=True); plt.close(_fig_fvs)
+        _ = st.pyplot(_fig_fvs, width="stretch"); plt.close(_fig_fvs)
     with tab3:
         _fig_wf = plot_waterfall(sv_pm, base_pm, effort)
-        _ = st.pyplot(_fig_wf, use_container_width=True); plt.close(_fig_wf)
+        _ = st.pyplot(_fig_wf, width="stretch"); plt.close(_fig_wf)
 
 # ── Insights ──────────────────────────────────────────────────────────────────
 st.markdown("<div class='section-header'>Key Insights</div>", unsafe_allow_html=True)
@@ -1232,7 +1221,7 @@ if ai_using:
     ga1, ga2 = st.columns([1.5, 1])
     with ga1:
         _fig_ai = plot_ai_comparison(effort, ai_effort, ai_effort_lo, ai_effort_hi, ai_short)
-        _ = st.pyplot(_fig_ai, use_container_width=True); plt.close(_fig_ai)
+        _ = st.pyplot(_fig_ai, width="stretch"); plt.close(_fig_ai)
     with ga2:
         ai_pct_lo = (1 - ai_mult_hi) * 100
         ai_pct_hi = (1 - ai_mult_lo) * 100
@@ -1278,20 +1267,20 @@ with ve1:
     st.markdown("**Ablation: Does FAHP actually help?**")
     if _abl_mmre and _fahp_imp:
         st.markdown(f"""<table class='data-table'>
-          <thead><tr><th>Model</th><th>LOO-MMRE</th><th>PRED(25)</th></tr></thead>
+          <thead><tr><th>Model</th><th>Nested-CV MMRE</th><th>PRED(25)</th></tr></thead>
           <tbody>
             <tr><td>SVR without FAHP (baseline)</td>
                 <td style='font-family:monospace;color:#C62828;font-weight:600;'>{_abl_mmre:.4f}</td>
                 <td style='color:#888;'>—</td></tr>
             <tr><td><strong>SVR with FAHP (this model)</strong></td>
-                <td style='font-family:monospace;color:#2E7D32;font-weight:600;'>{art['loo_mmre']:.4f}</td>
+                <td style='font-family:monospace;color:#2E7D32;font-weight:600;'>{_nested['mmre']:.4f}</td>
                 <td style='font-family:monospace;color:#2E7D32;font-weight:600;'>{f"{_pred25*100:.0f}%" if _pred25 else "—"}</td></tr>
           </tbody>
         </table>""", unsafe_allow_html=True)
         st.markdown(f"""<div class='wi-callout' style='margin-top:0.5rem;'>
-            FAHP feature weighting reduces LOO-MMRE by <strong>{_fahp_imp:.0f}%</strong>
-            — from {_abl_mmre:.3f} to {art['loo_mmre']:.4f}. This confirms that FAHP
-            is the primary driver of accuracy, not just the SVR kernel.
+            In matched nested validation, FAHP weighting changes MMRE by <strong>{_fahp_imp:.1f}%</strong>
+            — from {_abl_mmre:.4f} to {_nested['mmre']:.4f}. This is a comparison,
+            not proof that FAHP will improve every future dataset.
         </div>""", unsafe_allow_html=True)
     else:
         st.info("Ablation data not available — re-run train_model.py.")
@@ -1302,8 +1291,8 @@ with ve2:
         st.markdown(f"""<table class='data-table'>
           <thead><tr><th>Evaluation</th><th>Dataset</th><th>n</th><th>MMRE</th><th>PRED(25)</th></tr></thead>
           <tbody>
-            <tr><td>Leave-One-Out CV</td><td>COCOMO-81</td><td>{N_81}</td>
-                <td style='font-family:monospace;font-weight:600;color:#2E7D32;'>{art['loo_mmre']:.4f}</td>
+            <tr><td>Nested 10×5 CV</td><td>COCOMO-81</td><td>{N_81}</td>
+                <td style='font-family:monospace;font-weight:600;color:#2E7D32;'>{_nested['mmre']:.4f}</td>
                 <td style='font-family:monospace;'>{f"{_pred25*100:.0f}%" if _pred25 else "—"}</td></tr>
             <tr><td>Out-of-sample test</td><td>NASA-93</td><td>{_n93_n}</td>
                 <td style='font-family:monospace;font-weight:600;color:#BF6000;'>{_n93_mmre:.4f}</td>
@@ -1313,8 +1302,8 @@ with ve2:
         st.markdown(f"""<div class='insight-note' style='margin-top:0.5rem;'>
             Model trained on COCOMO-81 (63 projects) and tested on
             NASA-93 (93 entirely different NASA projects) — no data leakage.
-            Cross-dataset MMRE of {_n93_mmre:.3f} confirms the model generalizes
-            beyond its training distribution.
+            The external MMRE of {_n93_mmre:.3f} measures transfer to a separate dataset;
+            it does not guarantee accuracy for modern commercial projects.
         </div>""", unsafe_allow_html=True)
     else:
         st.info("NASA-93 validation not available — re-run train_model.py.")
@@ -1341,7 +1330,7 @@ if _mode_mmre:
                 f"<td style='font-family:monospace;'>{m['pred25']*100:.0f}%</td></tr>"
             )
     st.markdown(f"""<table class='data-table'>
-      <thead><tr><th>Mode</th><th>Project Type</th><th>n</th><th>LOO-MMRE</th><th>PRED(25)</th></tr></thead>
+      <thead><tr><th>Mode</th><th>Project Type</th><th>n</th><th>Nested-fold MMRE</th><th>PRED(25)</th></tr></thead>
       <tbody>{mode_rows}</tbody>
     </table>""", unsafe_allow_html=True)
 
@@ -1374,11 +1363,11 @@ with st.expander("Methodology — how this works", expanded=False):
 
 1. **FAHP Feature Weighting** — Chang (1996) extent analysis builds project-level pairwise matrices from the effort/LOC distributions of all 63 training projects. Feature importance is derived via Spearman correlation. Weights embedded as S = diag(√θ) into the SVR kernel.
 
-2. **Weighted-Kernel SVR** — sklearn SVR with RBF kernel, trained in log-space on COCOMO-81 (n=63). Kernel: K(θxₖ, θxₗ) = exp(−γ‖√θ(xₖ−xₗ)‖²). C and γ tuned by LOO-MMRE grid search.
+2. **Weighted-Kernel SVR** — sklearn SVR with RBF kernel, trained in log-space on COCOMO-81 (n=63). Kernel: K(θxₖ, θxₗ) = exp(−γ‖√θ(xₖ−xₗ)‖²).
 
-3. **Leave-One-Out CV** — Each project held out once; model trains on n−1, predicts the held-out. LOO-MMRE is the headline metric.
+3. **Nested validation** — Ten outer folds are used only for evaluation. Within each outer-training partition, five-fold inner CV selects hyperparameters and all scaling/FAHP fitting is repeated without seeing the outer-test rows. The deployment model is selected separately after evaluation.
 
-4. **Empirical 80% PI** — 10th/90th percentile of LOO signed relative errors. No parametric assumption.
+4. **Empirical 80% PI** — 10th/90th percentile of pure outer-fold signed relative errors. No parametric assumption.
 
 5. **SHAP** — KernelExplainer (background=50 representative projects ≤ 600 PM, nsamples=150, seed=42). Background excludes 13 defence mega-programs (up to 11,400 PM) to keep the baseline interpretable (~116 PM, near the geometric mean). SHAP values are in person-months; additivity verified at 0.00% error.
 
@@ -1390,7 +1379,7 @@ with st.expander("Methodology — how this works", expanded=False):
 # ─────────────────────────────────────────────────────────────────────────────
 n_81_val = art.get("n_cocomo81", 63)
 n_93_val = art.get("n_nasa93", 0)
-mmre_val = art.get("loo_mmre", 0.0)
+mmre_val = _nested["mmre"]
 st.markdown(f"""
 <div class='app-footer'>
   <div class='footer-left'>

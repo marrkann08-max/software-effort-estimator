@@ -11,3 +11,6 @@ __pycache__/
 *.log
 node_modules/
 .streamlit/secrets.toml
+.claude/
+.test-venv/
+.mpl-cache/

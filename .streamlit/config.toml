@@ -1,7 +1,19 @@
 [theme]
 base = "light"
+primaryColor = "#2563EB"
+backgroundColor = "#F3F3F3"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#111111"
+font = "sans-serif"
+
+[theme.sidebar]
+primaryColor = "#60A5FA"
+backgroundColor = "#0F0F0F"
+secondaryBackgroundColor = "#1C1C1C"
+textColor = "#CCCCCC"
+font = "sans-serif"
 
 [server]
 headless = true
-enableCORS = false
+enableCORS = true
 enableXsrfProtection = true
