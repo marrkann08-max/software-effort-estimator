@@ -1,0 +1,64 @@
+{
+  "generated_at_utc": "2026-09-04T18:43:43+00:00",
+  "methodology": {
+    "inner_role": "Hyperparameter selection and preprocessing fit on outer-training rows only",
+    "outer_role": "Pure evaluation only; hyperparameters are never selected on outer-test rows",
+    "prediction_interval_formula": "[prediction / (1 + q90), prediction / (1 + q10)]",
+    "residual_definition": "(prediction - actual) / actual",
+    "validation": "Nested 10-fold outer / 5-fold inner shuffled KFold"
+  },
+  "models": {
+    "cocomo81": {
+      "deployment_inner_cv_mmre": 0.3786,
+      "deployment_params": {
+        "C": 5,
+        "epsilon": 0.05,
+        "gamma": 1.0
+      },
+      "external_nasa93": {
+        "mmre": 0.5175,
+        "n": 93,
+        "pred25": 0.4624,
+        "role": "external test; never used for selection"
+      },
+      "fahp_comparison": {
+        "effect_pct": 9.3,
+        "unweighted_mmre": 0.4312,
+        "weighted_mmre": 0.391
+      },
+      "label": "COCOMO-81",
+      "mode_metrics": {
+        "embedded": {
+          "mmre": 0.4479,
+          "n": 28,
+          "pred25": 0.4643
+        },
+        "organic": {
+          "mmre": 0.3317,
+          "n": 24,
+          "pred25": 0.5417
+        },
+        "semidetached": {
+          "mmre": 0.3757,
+          "n": 11,
+          "pred25": 0.2727
+        }
+      },
+      "n": 63,
+      "nested_cv": {
+        "inner_splits": 5,
+        "mmre": 0.391,
+        "outer_splits": 10,
+        "pred25": 0.4603,
+        "pred50": 0.7143
+      },
+      "prediction_interval": {
+        "coverage": 0.8,
+        "q10": -0.443014,
+        "q90": 0.680043,
+        "source": "pure nested outer-fold signed relative errors"
+      }
+    }
+  },
+  "schema_version": 1
+}
