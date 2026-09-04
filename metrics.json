@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-09-04T18:43:43+00:00",
+  "generated_at_utc": "2026-09-04T18:45:15+00:00",
   "methodology": {
     "inner_role": "Hyperparameter selection and preprocessing fit on outer-training rows only",
     "outer_role": "Pure evaluation only; hyperparameters are never selected on outer-test rows",
@@ -56,6 +56,48 @@
         "coverage": 0.8,
         "q10": -0.443014,
         "q90": 0.680043,
+        "source": "pure nested outer-fold signed relative errors"
+      }
+    },
+    "github": {
+      "deployment_inner_cv_mmre": 0.1866,
+      "deployment_params": {
+        "C": 10,
+        "epsilon": 0.1,
+        "gamma": 1.0
+      },
+      "effort_proxy": {
+        "approximate_cap_author_months": 60.0,
+        "commit_sample_limit": 1200,
+        "definition": "unique author-days in sampled commits divided by 20",
+        "validated_above_cap": false
+      },
+      "fahp_comparison": {
+        "effect_pct": 4.4,
+        "unweighted_mmre": 0.2149,
+        "weighted_mmre": 0.2055
+      },
+      "label": "GitHub open-source proof of concept",
+      "n": 91,
+      "nested_cv": {
+        "inner_splits": 5,
+        "mmre": 0.2055,
+        "outer_splits": 10,
+        "pred25": 0.7033,
+        "pred50": 0.9341
+      },
+      "popularity_holdout": {
+        "caveat": "Popularity hold-out; repository stars are not a time variable",
+        "mmre": 0.1992,
+        "pred25": 0.6429,
+        "selection": "inner 5-fold CV on high-star training partition only",
+        "test_n": 28,
+        "train_n": 63
+      },
+      "prediction_interval": {
+        "coverage": 0.8,
+        "q10": -0.252736,
+        "q90": 0.44486,
         "source": "pure nested outer-fold signed relative errors"
       }
     }

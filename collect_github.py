@@ -14,7 +14,10 @@ HEADERS = {
     "Accept": "application/vnd.github.v3+json",
 }
 BASE    = "https://api.github.com"
-SINCE   = "2021-01-01T00:00:00Z"   # 3-year window of modern development
+SINCE   = "2021-01-01T00:00:00Z"   # Modern-development sampling window
+COMMIT_MAX_PAGES = 12
+COMMITS_PER_PAGE = 100
+COMMIT_SAMPLE_LIMIT = COMMIT_MAX_PAGES * COMMITS_PER_PAGE
 
 # ── Curated repos: medium-sized, team projects, active PR workflow ─────────────
 REPOS = [
@@ -207,9 +210,18 @@ def collect(owner_repo):
             test_file_ratio = round(test_n / total, 4)
 
     # ── 5. Commits since 2021 ─────────────────────────────────────────────────
-    commits = paginate(f"{BASE}/repos/{owner}/{repo}/commits",
-                       {"since": SINCE}, max_pages=12)
+    commits = paginate(
+        f"{BASE}/repos/{owner}/{repo}/commits",
+        {"since": SINCE},
+        max_pages=COMMIT_MAX_PAGES,
+    )
     print(f"  commits: {len(commits)}")
+    commit_sample_limit_hit = len(commits) >= COMMIT_SAMPLE_LIMIT
+    if commit_sample_limit_hit:
+        print(
+            f"  WARNING - commit history reached the {COMMIT_SAMPLE_LIMIT}-commit "
+            "sampling ceiling; author-months is censored near 60"
+        )
     if len(commits) < 15:
         print("  SKIP — too few commits"); return None
 
@@ -229,6 +241,7 @@ def collect(owner_repo):
     contributor_count = len({a for a, _ in author_days})
 
     # commit frequency (commits / week)
+    dates = []
     try:
         dates  = [c["commit"]["author"]["date"][:10] for c in commits]
         d0, d1 = min(dates), max(dates)
@@ -273,6 +286,12 @@ def collect(owner_repo):
         "lang_count":         lang_count,
         "commit_frequency":   round(commit_freq, 2),
         "stars":              meta.get("stargazers_count", 0),
+        "repo_created_at":    meta.get("created_at", ""),
+        "first_sampled_commit_at": min(dates) if dates else "",
+        "last_sampled_commit_at":  max(dates) if dates else "",
+        "sampled_commit_count":    len(commits),
+        "commit_sample_limit":     COMMIT_SAMPLE_LIMIT,
+        "commit_sample_limit_hit": commit_sample_limit_hit,
     }
     print(f"  effort={author_months:.1f} PM  contributors={contributor_count}  "
           f"KLOC={total_kloc:.0f}  review={avg_pr_review_days:.1f}d")

@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from validation import nested_cv_evaluate
+from validation import holdout_evaluate, nested_cv_evaluate
 
 
 class NestedValidationTests(unittest.TestCase):
@@ -51,6 +51,34 @@ class NestedValidationTests(unittest.TestCase):
         self.assertGreaterEqual(result["pred25"], 0.0)
         self.assertLessEqual(result["pred25"], 1.0)
         self.assertEqual(len(result["fold_details"]), 4)
+
+    def test_holdout_selection_is_confined_to_training_partition(self):
+        X_train = np.arange(1, 37, dtype=float).reshape(12, 3)
+        y_train = np.linspace(3.0, 24.0, 12)
+        X_test = np.arange(101, 113, dtype=float).reshape(4, 3)
+        y_test = np.linspace(30.0, 42.0, 4)
+        seen_training_sizes = []
+
+        def weights(X_subset, _y_subset):
+            seen_training_sizes.append(len(X_subset))
+            self.assertLess(float(np.max(X_subset)), 100.0)
+            return np.ones(X_subset.shape[1])
+
+        result = holdout_evaluate(
+            X_train,
+            y_train,
+            X_test,
+            y_test,
+            weights,
+            weighted=True,
+            param_grid={"C": [1], "gamma": [0.1], "epsilon": [0.1]},
+            inner_splits=3,
+            random_state=9,
+        )
+
+        self.assertTrue(seen_training_sizes)
+        self.assertEqual(max(seen_training_sizes), len(X_train))
+        self.assertEqual(len(result["predictions"]), len(y_test))
 
 
 if __name__ == "__main__":
