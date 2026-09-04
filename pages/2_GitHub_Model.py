@@ -1,6 +1,8 @@
 import streamlit as st
 import numpy as np
 import pickle, os, warnings
+
+from validation import prediction_interval
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -154,8 +156,8 @@ gh_scaler_y = art["scaler_y"]
 gh_kernel_w = art["kernel_w"]
 gh_fahp_w   = art["fahp_weights"]
 gh_feat     = art["feature_names"]
-gh_pi_lo    = art.get("pi_lo_pct", -0.25)
-gh_pi_hi    = art.get("pi_hi_pct",  0.33)
+gh_pi_q10   = art.get("pi_q10", art.get("pi_lo_pct", -0.25))
+gh_pi_q90   = art.get("pi_q90", art.get("pi_hi_pct", 0.33))
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -220,8 +222,7 @@ x_w   = x_sc * gh_kernel_w
 p_sc  = gh_model.predict(x_w)
 p_log = gh_scaler_y.inverse_transform(p_sc.reshape(-1, 1))[0, 0]
 effort = max(float(np.expm1(p_log)), 1.0)
-lo     = max(1.0, effort * (1 + gh_pi_lo))
-hi     = effort * (1 + gh_pi_hi)
+lo, hi = prediction_interval(effort, gh_pi_q10, gh_pi_q90, minimum=1.0)
 
 _t_mmre   = art.get("temporal_mmre", None)
 _t_pred25 = art.get("temporal_pred25", None)

@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import pickle, os, warnings
 
+from validation import prediction_interval
+
 # Root directory — pages/ is one level below the repo root
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -416,8 +418,8 @@ scaler_y = art["scaler_y"]
 fahp_w   = art["fahp_weights"]
 kernel_w = art.get("kernel_w", np.sqrt(fahp_w))
 X_train  = art["X_train"]
-PI_LO    = art.get("pi_lo_pct", -0.46)
-PI_HI    = art.get("pi_hi_pct",  0.56)
+PI_Q10   = art.get("pi_q10", art.get("pi_lo_pct", -0.46))
+PI_Q90   = art.get("pi_q90", art.get("pi_hi_pct", 0.56))
 N_81     = art.get("n_cocomo81", 63)
 N_93     = art.get("n_nasa93",   0)
 
@@ -501,12 +503,16 @@ def predict(vec_raw):
     return max(float(np.expm1(pl)), 1.0), vw
 
 @st.cache_data(show_spinner=False)
-def compute_shap(vec_raw_tuple):
+def compute_shap(vec_raw_tuple, model_mtime):
     """
     Compute SHAP values in the ORIGINAL feature space (raw inputs → person-months).
     The full pipeline (log → MinMaxScale → FAHP-weight → SVR → inverse-scale → expm1)
     is wrapped into a single function so KernelExplainer works on raw features.
     This means each SHAP value is directly interpretable as person-month contribution.
+
+    `model_mtime` is part of the cache key only — it ensures cached SHAP values are
+    invalidated when model.pkl is retrained (mirrors load_model's mtime-based busting),
+    so the explanation never lags behind the prediction.
     """
     if not SHAP_AVAILABLE:
         return None, None
@@ -665,10 +671,9 @@ def plot_waterfall(sv_pm, base_pm, effort_pm):
     plt.tight_layout()
     return fig
 
-def plot_confidence_band(effort, pi_lo, pi_hi, ai_effort=None):
+def plot_confidence_band(effort, q10, q90, ai_effort=None):
     """Render 80% PI band — title is shown via Streamlit, not matplotlib."""
-    lo     = max(1.0, effort * (1 + pi_lo))
-    hi     = effort * (1 + pi_hi)
+    lo, hi = prediction_interval(effort, q10, q90, minimum=1.0)
     has_ai = ai_effort is not None and ai_effort != effort
     row_h  = 0.52
     y_base = 0.38 if has_ai else 0.0
@@ -700,8 +705,7 @@ def plot_confidence_band(effort, pi_lo, pi_hi, ai_effort=None):
     # Compute xlim first so label placement is stable
     all_vals = [lo, hi, effort]
     if has_ai:
-        ai_lo = max(1.0, ai_effort * (1 + pi_lo))
-        ai_hi = ai_effort * (1 + pi_hi)
+        ai_lo, ai_hi = prediction_interval(ai_effort, q10, q90, minimum=1.0)
         all_vals += [ai_lo, ai_hi, ai_effort]
     x_min = min(all_vals) * 0.60
     x_max = max(all_vals) * 1.14
@@ -1015,8 +1019,7 @@ if dev_mode == "Organic" and loc > ORGANIC_MAX_KLOC:
     )
 cal_months    = 2.5 * (effort ** 0.38)
 team_size     = max(1, round(effort / cal_months))
-pi_lo_abs     = max(1.0, effort * (1 + PI_LO))
-pi_hi_abs     = effort * (1 + PI_HI)
+pi_lo_abs, pi_hi_abs = prediction_interval(effort, PI_Q10, PI_Q90, minimum=1.0)
 risk_label, risk_color, risk_css, risk_icon = classify_risk(effort, eaf, loc)
 # GenAI-adjusted figures
 ai_effort     = effort * ai_mult
@@ -1055,8 +1058,8 @@ for col, label, value, unit, sub in cols_data:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Confidence band ────────────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>80% Prediction Interval &nbsp;·&nbsp; empirical, Leave-One-Out</div>", unsafe_allow_html=True)
-_fig_cb = plot_confidence_band(effort, PI_LO, PI_HI,
+st.markdown("<div class='section-header'>80% Prediction Interval &nbsp;·&nbsp; empirical, nested outer folds</div>", unsafe_allow_html=True)
+_fig_cb = plot_confidence_band(effort, PI_Q10, PI_Q90,
           ai_effort=ai_effort if ai_using else None)
 _ = st.pyplot(_fig_cb, use_container_width=True)
 plt.close(_fig_cb)
@@ -1064,7 +1067,7 @@ plt.close(_fig_cb)
 # ── Executive Summary ─────────────────────────────────────────────────────────
 if SHAP_AVAILABLE:
     with st.spinner("Computing SHAP values…"):
-        sv_pm, base_pm = compute_shap(tuple(vec_raw.ravel().tolist()))
+        sv_pm, base_pm = compute_shap(tuple(vec_raw.ravel().tolist()), _mtime)
     top_pos_feats = [FEATURES[i] for i in np.argsort(sv_pm)[::-1] if sv_pm[i] > 0]
 else:
     sv_pm, base_pm = None, None
@@ -1357,8 +1360,9 @@ st.markdown(f"""
     are acknowledged simplifications.<br><br>
     <strong>GenAI adjustment:</strong> Post-hoc multipliers from external studies, not trained into the model.
     Applied to total effort; actual productivity gains in coding-only tasks may be higher.
-    <strong>80% PI of [{PI_LO*100:+.0f}%, {PI_HI*100:+.0f}%]</strong> means roughly 1-in-5 projects
-    will fall outside this range. Wide but empirically grounded.
+    The <strong>80% interval</strong> converts the 10th and 90th percentiles of pure nested
+    outer-fold signed relative errors using actual = prediction / (1 + error). Roughly 1-in-5
+    comparable projects may fall outside this empirical range.
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -1394,7 +1398,7 @@ st.markdown(f"""
     Research demo &nbsp;&middot;&nbsp; Mitacs Internship Proposal<br>
     Training data: COCOMO-81 (n={n_81_val}) &nbsp;&middot;&nbsp;
     FAHP (Chang 1996) + Weighted-Kernel SVR (Sehra et al. 2018) &nbsp;&middot;&nbsp;
-    LOO-MMRE&nbsp;{mmre_val:.4f} &nbsp;&middot;&nbsp; 80%&nbsp;PI&nbsp;[{PI_LO*100:+.0f}%,&nbsp;{PI_HI*100:+.0f}%]
+    Nested-CV MMRE&nbsp;{mmre_val:.4f} &nbsp;&middot;&nbsp; residual q10/q90&nbsp;[{PI_Q10*100:+.0f}%,&nbsp;{PI_Q90*100:+.0f}%]
   </div>
   <div class='footer-right'>v0.2-demo</div>
 </div>
