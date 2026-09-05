@@ -101,8 +101,13 @@ def relative_errors(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
 def metrics_from_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     signed = relative_errors(y_true, y_pred)
     absolute = np.abs(signed)
+    absolute_error = np.abs(np.asarray(y_pred, dtype=float) - np.asarray(y_true, dtype=float))
     return {
         "mmre": float(np.mean(absolute)),
+        "mdmre": float(np.median(absolute)),
+        "mae": float(np.mean(absolute_error)),
+        "median_absolute_error": float(np.median(absolute_error)),
+        "rmse": float(np.sqrt(np.mean(absolute_error**2))),
         "pred25": float(np.mean(absolute <= 0.25)),
         "pred50": float(np.mean(absolute <= 0.50)),
         "pi_q10": float(np.percentile(signed, 10)),

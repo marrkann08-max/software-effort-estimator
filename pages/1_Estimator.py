@@ -8,6 +8,7 @@ import matplotlib.patches as mpatches
 import pickle, os
 
 from app_metrics import model_metrics
+from explainability import agreement_metrics
 from validation import prediction_interval
 
 # Root directory — pages/ is one level below the repo root
@@ -168,8 +169,8 @@ section[data-testid="stSidebar"] .stSlider p {
     text-transform: uppercase; font-weight: 600; margin-bottom: 0.5rem;
 }
 .metric-value {
-    font-family: "JetBrains Mono", monospace; font-size: 2.6rem; font-weight: 600;
-    color: #111111; line-height: 1; letter-spacing: -0.03em;
+    font-family: "JetBrains Mono", monospace; font-size: 2.1rem; font-weight: 600;
+    color: #111111; line-height: 1; letter-spacing: -0.03em; white-space: nowrap;
 }
 .metric-unit { font-size: 0.78rem; color: #888888; margin-top: 0.28rem; }
 .metric-range {
@@ -421,6 +422,42 @@ PI_Q10   = art.get("pi_q10", art.get("pi_lo_pct", -0.46))
 PI_Q90   = art.get("pi_q90", art.get("pi_hi_pct", 0.56))
 COCOMO_METRICS = model_metrics("cocomo81")
 GITHUB_METRICS = model_metrics("github")
+
+# Cross-fitted explainability results are part of the model evidence, not an
+# optional decoration.  Stop rather than silently falling back to a local,
+# in-sample comparison if the training audit has not been generated.
+_EXPLAINABILITY_KEYS = {
+    "primary_alignment",
+    "primary_alignment_across_repeats",
+    "primary_alignment_project_bootstrap",
+    "primary_comparison",
+    "protocol",
+    "feature_table",
+    "feature_label_permutation_null",
+    "joint_stability_scope",
+    "nonzero_features_per_explanation",
+    "numerical_sensitivity",
+    "unweighted_global_ranking_stability",
+    "unweighted_local_stability",
+    "weighted_alignment_descriptive",
+    "weighted_alignment_across_repeats_descriptive",
+    "weighting_proxy",
+}
+try:
+    EXPLAINABILITY = COCOMO_METRICS["explainability"]
+    _missing_explainability = sorted(_EXPLAINABILITY_KEYS - set(EXPLAINABILITY))
+    if _missing_explainability or not EXPLAINABILITY["feature_table"]:
+        detail = ", ".join(_missing_explainability) or "feature_table"
+        raise KeyError(detail)
+except (KeyError, TypeError) as _explainability_error:
+    st.error(
+        "**Cross-fitted explainability evidence is missing or incomplete.** "
+        "Re-run `python train_model.py` to regenerate the model, SHAP audit, and metrics "
+        f"before using this page. Missing: {_explainability_error}",
+        icon="🚨",
+    )
+    st.stop()
+
 N_81 = COCOMO_METRICS["n"]
 N_93 = COCOMO_METRICS["external_nasa93"]["n"]
 PI_Q10 = COCOMO_METRICS["prediction_interval"]["q10"]
@@ -499,7 +536,7 @@ def predict(vec_raw):
 def compute_shap(vec_raw_tuple, model_mtime):
     """
     Compute SHAP values in the ORIGINAL feature space (raw inputs → person-months).
-    The full pipeline (log → MinMaxScale → FAHP-weight → SVR → inverse-scale → expm1)
+    The full pipeline (log → MinMaxScale → data-derived weight → SVR → inverse-scale → expm1)
     is wrapped into a single function so KernelExplainer works on raw features.
     This means each SHAP value is directly interpretable as person-month contribution.
 
@@ -508,21 +545,19 @@ def compute_shap(vec_raw_tuple, model_mtime):
     so the explanation never lags behind the prediction.
     """
     if not SHAP_AVAILABLE:
-        return None, None
+        return None, None, None
     X_raw_all = art.get("X_raw", None)
     if X_raw_all is None:
-        return None, None
+        return None, None, None
     vec_raw_arr = np.array(vec_raw_tuple).reshape(1, -1)
     np.random.seed(42)
-    # Representative background: projects <= 600 PM (80th percentile).
-    # Excludes 13 defence mega-programs (up to 11,400 PM) that skew the arithmetic
-    # mean to 620 PM — not representative of modern commercial software.
-    # Gives base value ~116 PM (near the geometric mean of the distribution).
+    # Selected UI background: the 50 COCOMO-81 projects at or below 600 PM.
+    # This outcome-conditioned subset makes the interactive reference explicit;
+    # it is separate from the training-only backgrounds in the OOF audit.
     y_raw = art.get("y_raw_pm", None)
-    if y_raw is not None:
-        bg = X_raw_all[y_raw <= 600.0]
-    else:
-        bg = X_raw_all
+    if y_raw is None:
+        return None, None, None
+    bg = X_raw_all[y_raw <= 600.0]
 
     def full_pipeline(X):
         Xl = np.log(np.clip(X, 1e-3, None))
@@ -530,11 +565,27 @@ def compute_shap(vec_raw_tuple, model_mtime):
         Xw = Xs * kernel_w
         ps = model.predict(Xw)
         pl = scaler_y.inverse_transform(ps.reshape(-1, 1)).ravel()
-        return np.expm1(pl)
+        # Match predict() exactly: local SHAP must explain the value displayed by
+        # the app, including the one-person-month output floor.
+        return np.maximum(np.expm1(pl), 1.0)
 
     exp = shap.KernelExplainer(full_pipeline, bg)
-    sv  = exp.shap_values(vec_raw_arr, nsamples=150, silent=True)
-    return sv[0], float(exp.expected_value)
+    sv = exp.shap_values(
+        vec_raw_arr,
+        nsamples=256,
+        l1_reg=0,
+        silent=True,
+    )
+    return sv[0], float(exp.expected_value), int(len(bg))
+
+
+def local_agreement_metrics(proxy_weights, shap_values, top_k=3):
+    """Descriptive agreement for one prediction; never used as research evidence."""
+    return agreement_metrics(
+        np.asarray(proxy_weights, dtype=float),
+        np.abs(np.asarray(shap_values, dtype=float)),
+        top_k=top_k,
+    )
 
 
 # ── Risk classification ───────────────────────────────────────────────────────
@@ -560,7 +611,7 @@ def classify_risk(effort, eaf, loc):
 
 
 # ── Executive summary ─────────────────────────────────────────────────────────
-def executive_summary(effort, cal_months, team_size, eaf, loc, top_driver, top_saver, risk_label,
+def executive_summary(effort, cal_months, team_size, eaf, loc, top_attribution, top_scenario, risk_label,
                       ai_effort=None, ai_cal=None, ai_team=None, ai_pct=None, ai_short=None):
     size_str      = ("small" if loc < 15 else "medium-sized" if loc < 100 else "large")
     effort_context = ("straightforward" if effort < 50 else "moderate" if effort < 200 else "substantial")
@@ -568,22 +619,21 @@ def executive_summary(effort, cal_months, team_size, eaf, loc, top_driver, top_s
         f"This {size_str} project ({loc:.0f} KLOC) is estimated to require "
         f"<strong>{effort:.0f} person-months</strong> of effort — "
         f"a {effort_context} undertaking with <strong>{risk_label.lower()} delivery risk</strong>.",
-        f"With a recommended team of <strong>{team_size} engineers</strong>, "
+        f"With an illustrative team of <strong>{team_size} engineers</strong>, "
         f"the projected schedule is approximately <strong>{cal_months:.0f} months</strong>. "
-        f"The largest effort driver is <strong>{top_driver}</strong>"
-        + (f", while the best way to reduce cost is to improve <strong>{top_saver}</strong>." if top_saver else "."),
+        f"The largest positive local SHAP attribution is <strong>{top_attribution}</strong>"
+        + (f". In the one-feature sensitivity scan, the largest modeled downward difference involves <strong>{top_scenario}</strong>." if top_scenario else "."),
     ]
     if eaf < 0.85:
-        lines.append("Project conditions are <strong>favorable</strong>: high team capability and good tooling are already significantly reducing the baseline estimate.")
+        lines.append("The selected inputs produce an <strong>EAF below 0.85</strong>; this is a model association, not evidence that changing one input will cause the estimate to fall.")
     elif eaf > 1.15:
-        lines.append("Project conditions are <strong>challenging</strong>: several cost drivers are pushing the estimate above the baseline — address these early to avoid overruns.")
+        lines.append("The selected inputs produce an <strong>EAF above 1.15</strong>; this is a model association, not a causal diagnosis of delivery risk.")
     if ai_effort is not None and ai_pct and ai_pct > 1:
         lines.append(
-            f"With <strong>{ai_short} AI tool usage</strong>, the estimate drops to "
-            f"<strong>{ai_effort:.0f} PM ({ai_pct:.0f}% reduction)</strong> — "
+            f"Under the <strong>{ai_short} AI multiplier scenario</strong>, the estimate is "
+            f"<strong>{ai_effort:.0f} PM ({ai_pct:.0f}% below the unadjusted estimate)</strong> — "
             f"a team of {ai_team} could deliver in roughly {ai_cal:.0f} months. "
-            f"Quantifying this gap (COCOMO TOOL tops out at 17%; modern AI tools exceed that) "
-            f"is the novel contribution of this research."
+            "This post-hoc scenario is not a causal prediction from the trained model."
         )
     return " ".join(lines)
 
@@ -608,7 +658,7 @@ def plot_shap_bar(sv_pm, effort_pm):
     ax.barh([FEATURES[i] for i in order[::-1]], [sv_pm[i] for i in order[::-1]],
             color=colors[::-1], height=0.58, edgecolor="none")
     ax.axvline(0, color="#A1A1AA", lw=0.8, ls="--", alpha=0.7)
-    _style_ax(ax, f"Feature Contributions  ·  {effort_pm:.0f} PM",
+    _style_ax(ax, f"Local SHAP Attributions  ·  {effort_pm:.0f} PM",
               "SHAP value (person-months)")
     ax.tick_params(axis="y", labelsize=8.5, colors="#27272A")
     ax.legend(handles=[
@@ -625,14 +675,14 @@ def plot_fahp_vs_shap(sv_pm):
     fig, ax = plt.subplots(figsize=(7, 4))
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#FAFAFA")
-    ax.bar(x - w/2, fn, width=w, label="FAHP prior weight",
+    ax.bar(x - w/2, fn, width=w, label="Training-derived weight proxy",
            color="#A8B8D8", edgecolor="none")
-    ax.bar(x + w/2, sn, width=w, label="SHAP posterior importance",
+    ax.bar(x + w/2, sn, width=w, label="Current prediction |SHAP|",
            color="#C8A8A8", edgecolor="none")
     ax.set_xticks(x)
     ax.set_xticklabels(FEATURES, rotation=45, ha="right", fontsize=7.5)
     ax.set_ylabel("Normalised weight", fontsize=8, color="#71717A")
-    _style_ax(ax, "FAHP Prior vs SHAP Posterior")
+    _style_ax(ax, "Current Prediction: Weight Proxy vs Local |SHAP|")
     ax.spines["left"].set_color("#E4E4E7")
     ax.legend(fontsize=8, frameon=False)
     plt.tight_layout()
@@ -658,7 +708,7 @@ def plot_waterfall(sv_pm, base_pm, effort_pm):
                label=f"Baseline {base_pm:.0f} PM")
     ax.axvline(effort_pm, color="#09090B", lw=1.5,
                label=f"Prediction {effort_pm:.0f} PM")
-    _style_ax(ax, "Cumulative Contribution Waterfall", "Person-months")
+    _style_ax(ax, "Local SHAP Attribution Waterfall", "Person-months")
     ax.tick_params(axis="y", colors="#27272A", labelsize=8.5)
     ax.legend(fontsize=8, frameon=False)
     plt.tight_layout()
@@ -724,8 +774,8 @@ def plot_confidence_band(effort, q10, q90, ai_effort=None):
 
 # ── GenAI comparison chart ───────────────────────────────────────────────────
 def plot_ai_comparison(effort, ai_effort, ai_lo, ai_hi, ai_label):
-    saving = effort - ai_effort
-    pct    = saving / effort * 100
+    modeled_difference = effort - ai_effort
+    pct = modeled_difference / effort * 100
     labels = ["Baseline\n(no AI)", f"With AI\n({ai_label})"]
     values = [effort, ai_effort]
     colors = ["#3D5A80", "#4E8A6E"]
@@ -747,7 +797,7 @@ def plot_ai_comparison(effort, ai_effort, ai_lo, ai_hi, ai_label):
             f"{ai_lo:.0f}–{ai_hi:.0f} range",
             va="center", fontfamily="monospace", fontsize=7.5, color="#71717A")
     ax.set_xlabel("Person-months", fontsize=8, color="#71717A", fontfamily="sans-serif")
-    _style_ax(ax, f"GenAI saves {saving:.0f} PM  ({pct:.0f}% reduction)")
+    _style_ax(ax, f"Assumed GenAI scenario: −{modeled_difference:.0f} PM  (−{pct:.0f}%)")
     ax.set_xlim(0, effort * 1.45)
     ax.grid(axis="x", color="#F4F4F5", linewidth=0.7, zorder=0)
     for sp in ["top", "right", "left"]: ax.spines[sp].set_visible(False)
@@ -758,41 +808,39 @@ def plot_ai_comparison(effort, ai_effort, ai_lo, ai_hi, ai_label):
 # ── What-if ──────────────────────────────────────────────────────────────────
 def whatif(base_raw, base_effort, ratings, dev_mode_val):
     """
-    For each action, compute effort if we move one rating step in the beneficial direction.
+    Evaluate pre-defined one-at-a-time rating scenarios.
     Capability/experience/practice drivers (ACAP, AEXP, PCAP, VEXP, LEXP, MODP, TOOL):
-      higher rating → lower multiplier → less effort, so direction = +1 (Nominal→High).
+      test one rating step upward.
     Stress drivers (CPLX, RELY, TIME, STOR):
-      lower rating → lower multiplier → less effort, so direction = -1 (Nominal→Low).
+      test one rating step downward.
     Dev Mode is a project constant — not included in what-if.
     """
-    improvable = {
-        # Capability & practice drivers: improve = move UP the scale (+1)
-        "ACAP": ("Increase analyst capability",      +1),
-        "AEXP": ("Increase application experience",  +1),
-        "PCAP": ("Increase programmer capability",   +1),
-        "VEXP": ("Increase VM experience",           +1),
-        "LEXP": ("Increase language experience",     +1),
-        "MODP": ("Improve modern practices",         +1),
-        "TOOL": ("Adopt better tools",               +1),
-        # Stress drivers: reduce = move DOWN the scale (-1)
-        "CPLX": ("Reduce complexity",                -1),
-        "RELY": ("Lower reliability requirement",    -1),
-        "TIME": ("Relax time constraint",            -1),
-        "STOR": ("Relax memory constraint",          -1),
+    scenarios = {
+        "ACAP": ("Set analyst capability one level higher",     +1),
+        "AEXP": ("Set application experience one level higher", +1),
+        "PCAP": ("Set programmer capability one level higher",  +1),
+        "VEXP": ("Set VM experience one level higher",          +1),
+        "LEXP": ("Set language experience one level higher",    +1),
+        "MODP": ("Set practices rating one level higher",       +1),
+        "TOOL": ("Set tools rating one level higher",           +1),
+        "CPLX": ("Set complexity one level lower",              -1),
+        "RELY": ("Set reliability requirement one level lower", -1),
+        "TIME": ("Set time constraint one level lower",         -1),
+        "STOR": ("Set memory constraint one level lower",       -1),
     }
     results = []
-    for feat, (label, direction) in improvable.items():
+    for feat, (label, direction) in scenarios.items():
         cur = RATING_MAP[ratings[feat]]
         nxt = cur + direction
         if 0 <= nxt < 5:
             nr = ratings.copy(); nr[feat] = RATING_LABELS[nxt]
             ne, _ = predict(inputs_to_raw(base_raw[0, 0], nr, dev_mode_val))
-            saving = base_effort - ne
-            if saving > 0.5:
-                results.append(dict(action=label, feature=feat,
+            difference = ne - base_effort
+            if difference < -0.5:
+                results.append(dict(scenario=label, feature=feat,
                     from_=RATING_LABELS[cur], to=RATING_LABELS[nxt],
-                    saving=saving, pct=saving / base_effort * 100))
-    return sorted(results, key=lambda r: r["saving"], reverse=True)
+                    difference=difference, pct=difference / base_effort * 100))
+    return sorted(results, key=lambda r: r["difference"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -803,7 +851,7 @@ with st.sidebar:
     st.markdown("""
     <div style='padding:0 0 0.8rem 0;border-bottom:1px solid #1E1E1E;margin-bottom:0.8rem;'>
       <div style='font-size:0.85rem;font-weight:600;color:#DDDDDD;letter-spacing:-0.01em;'>Software Effort Estimator</div>
-      <div style='font-size:0.67rem;color:#555555;margin-top:0.1rem;font-family:monospace;letter-spacing:0.04em;'>FAHP &middot; SVR &middot; SHAP</div>
+      <div style='font-size:0.67rem;color:#555555;margin-top:0.1rem;font-family:monospace;letter-spacing:0.04em;'>FAHP-inspired weights &middot; SVR &middot; SHAP</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -948,13 +996,13 @@ _n93_n       = _n93["n"]
 st.markdown(f"""
 <div class="page-header">
   <div class="page-title"> &nbsp;Software Effort Estimator</div>
-  <div class="page-subtitle">Explainable AI for software project planning &nbsp;&middot;&nbsp; FAHP &nbsp;&middot;&nbsp; Weighted-Kernel SVR &nbsp;&middot;&nbsp; SHAP</div>
+  <div class="page-subtitle">Explainable software-effort research prototype &nbsp;&middot;&nbsp; FAHP-inspired weighting &nbsp;&middot;&nbsp; SVR &nbsp;&middot;&nbsp; SHAP</div>
   <div>
     <span class="stat-pill-blue">Nested-CV MMRE {_nested['mmre']:.4f}</span>
     {f'<span class="stat-pill-green">PRED(25) {_pred25*100:.0f}%</span>' if _pred25 else ''}
     <span class="stat-pill-green">n={N_81} COCOMO-81</span>
     {f'<span class="stat-pill-dark">NASA-93 MMRE {_n93_mmre:.3f}</span>' if _n93_mmre else ''}
-    <span class="stat-pill-dark">Chang 1996 FAHP</span>
+    <span class="stat-pill-dark">Data-derived FAHP proxy</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -1016,8 +1064,8 @@ ai_effort_lo  = effort * ai_mult_lo   # optimistic (max reduction)
 ai_effort_hi  = effort * ai_mult_hi   # conservative (min reduction)
 ai_cal        = 2.5 * (ai_effort ** 0.38)
 ai_team       = max(1, round(ai_effort / ai_cal))
-ai_saving     = effort - ai_effort
-ai_pct        = ai_saving / effort * 100
+ai_modeled_difference = effort - ai_effort
+ai_pct = ai_modeled_difference / effort * 100
 ai_using      = ai_mult < 1.0
 ai_short      = ai_level.split("—")[0].strip()
 
@@ -1028,7 +1076,7 @@ cols_data = [
      f"<span style='font-size:0.72rem;color:#57606a;'>80% range: {pi_lo_abs:.0f} – {pi_hi_abs:.0f} PM</span>"),
     (c2, "Calendar Duration",  f"{cal_months:.0f}", "months",
      f"<span style='font-size:0.72rem;color:#57606a;'>COCOMO T = 2.5 × PM⁰·³⁸</span>"),
-    (c3, "Recommended Team",   f"{team_size}",       "engineers",
+    (c3, "Illustrative Team",  f"{team_size}",       "engineers",
      f"<span style='font-size:0.72rem;color:#57606a;'>{effort:.0f} PM ÷ {cal_months:.0f} mo</span>"),
     (c4, "Effort Adj. Factor", f"{eaf:.3f}",         "combined EAF",
      f"<span style='font-size:0.72rem;color:#57606a;'>{'< 1 = favorable' if eaf < 1 else ('= 1 = average' if abs(eaf-1)<0.01 else '> 1 = challenging')}</span>"),
@@ -1036,7 +1084,12 @@ cols_data = [
      f"<span style='font-size:0.71rem;color:#AAAAAA;'>size &middot; EAF &middot; complexity</span>"),
 ]
 for col, label, value, unit, sub in cols_data:
-    risk_style = f"color:{risk_color};" if label == "Delivery Risk" else ""
+    if label == "Delivery Risk":
+        risk_style = f"color:{risk_color};font-size:1.65rem;"
+    elif label == "Effort Adj. Factor":
+        risk_style = "font-size:1.9rem;"
+    else:
+        risk_style = ""
     col.markdown(f"""<div class='metric-card'>
         <div class='metric-label'>{label}</div>
         <div class='metric-value' style='{risk_style}'>{value}</div>
@@ -1056,18 +1109,24 @@ plt.close(_fig_cb)
 # ── Executive Summary ─────────────────────────────────────────────────────────
 if SHAP_AVAILABLE:
     with st.spinner("Computing SHAP values…"):
-        sv_pm, base_pm = compute_shap(tuple(vec_raw.ravel().tolist()), _mtime)
+        sv_pm, base_pm, local_bg_n = compute_shap(tuple(vec_raw.ravel().tolist()), _mtime)
+    if sv_pm is None:
+        st.error(
+            "**Interactive SHAP inputs are missing from model.pkl.** "
+            "Re-run `python train_model.py` before using this page.", icon="🚨"
+        )
+        st.stop()
     top_pos_feats = [FEATURES[i] for i in np.argsort(sv_pm)[::-1] if sv_pm[i] > 0]
 else:
-    sv_pm, base_pm = None, None
+    sv_pm, base_pm, local_bg_n = None, None, None
     top_pos_feats = []
 
 wi_results    = whatif(vec_raw, effort, ratings, dev_mode)
-top_driver    = top_pos_feats[0] if top_pos_feats else "project size"
-top_saver     = wi_results[0]["feature"] if wi_results else None
+top_attribution = top_pos_feats[0] if top_pos_feats else "project size"
+top_scenario    = wi_results[0]["feature"] if wi_results else None
 
 summary_html = executive_summary(
-    effort, cal_months, team_size, eaf, loc, top_driver, top_saver, risk_label,
+    effort, cal_months, team_size, eaf, loc, top_attribution, top_scenario, risk_label,
     ai_effort=ai_effort if ai_using else None,
     ai_cal=ai_cal, ai_team=ai_team, ai_pct=ai_pct, ai_short=ai_short,
 )
@@ -1078,31 +1137,134 @@ st.markdown(f"""
 </div>""", unsafe_allow_html=True)
 
 # ── SHAP tabs ─────────────────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>Explainability</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-header'>Cross-Fitted Explainability Evidence</div>", unsafe_allow_html=True)
+
+_primary = EXPLAINABILITY["primary_alignment"]
+_primary_repeats = EXPLAINABILITY["primary_alignment_across_repeats"]
+_primary_bootstrap = EXPLAINABILITY["primary_alignment_project_bootstrap"]
+_rank_stability = EXPLAINABILITY["unweighted_global_ranking_stability"]
+_local_stability = EXPLAINABILITY["unweighted_local_stability"]
+_weighted_desc = EXPLAINABILITY["weighted_alignment_descriptive"]
+_weighted_repeats = EXPLAINABILITY["weighted_alignment_across_repeats_descriptive"]
+_protocol = EXPLAINABILITY["protocol"]
+_permutation = EXPLAINABILITY["feature_label_permutation_null"]
+_numerical = EXPLAINABILITY["numerical_sensitivity"]
+_proxy_diagnostics = EXPLAINABILITY["weighting_proxy"]["full_data_diagnostics"]
+_numerical_main = next(
+    row for row in _numerical["sample_size_results"]
+    if row["nsamples"] == _protocol["nsamples"]
+)
+
+ea1, ea2, ea3, ea4 = st.columns(4)
+_evidence_cards = [
+    (ea1, "Primary agreement ρ", _primary["spearman_rho"],
+     "proxy vs unweighted OOF |SHAP|",
+     f"conditional project interval {_primary_bootstrap['metrics']['spearman_rho']['lower']:.3f}–{_primary_bootstrap['metrics']['spearman_rho']['upper']:.3f}"),
+    (ea2, "Joint rank stability ρ", _rank_stability["spearman_rho"]["median"],
+     "splits, models, backgrounds, seeds vary",
+     f"IQR {_rank_stability['spearman_rho']['q25']:.3f}–{_rank_stability['spearman_rho']['q75']:.3f}"),
+    (ea3, "Joint local stability", _local_stability["cosine_similarity"]["median"],
+     "same project across repeated pipeline",
+     f"IQR {_local_stability['cosine_similarity']['q25']:.3f}–{_local_stability['cosine_similarity']['q75']:.3f}"),
+    (ea4, "Weighted agreement ρ*", _weighted_desc["spearman_rho"],
+     "descriptive weighted-model result",
+     f"repeat median {_weighted_repeats['spearman_rho']['median']:.3f} · IQR {_weighted_repeats['spearman_rho']['q25']:.3f}–{_weighted_repeats['spearman_rho']['q75']:.3f}"),
+]
+for _col, _label, _value, _unit, _range in _evidence_cards:
+    _col.markdown(f"""<div class='metric-card'>
+        <div class='metric-label'>{_label}</div>
+        <div class='metric-value' style='font-size:1.9rem;'>{_value:.3f}</div>
+        <div class='metric-unit'>{_unit}</div>
+        <div class='metric-range'>{_range}</div>
+    </div>""", unsafe_allow_html=True)
+
+_feature_rows = sorted(
+    EXPLAINABILITY["feature_table"], key=lambda row: row["unweighted_shap_rank"]
+)[:5]
+_feature_rows_html = "".join(
+    f"<tr><td><strong>{row['feature']}</strong></td>"
+    f"<td style='font-family:monospace;'>#{row['proxy_rank']} &nbsp;({row['mean_weighting_proxy']*100:.1f}%)</td>"
+    f"<td style='font-family:monospace;'>#{row['unweighted_shap_rank']} &nbsp;({row['unweighted_oof_shap_reliance']*100:.1f}%)</td>"
+    f"<td style='font-family:monospace;'>{row['unweighted_shap_rank_iqr'][0]:.1f}–{row['unweighted_shap_rank_iqr'][1]:.1f}</td>"
+    f"<td style='font-family:monospace;'>{row['unweighted_top_k_frequency']*100:.0f}%</td>"
+    f"<td style='font-family:monospace;'>#{row['weighted_shap_rank']} &nbsp;({row['weighted_oof_shap_reliance']*100:.1f}%)</td></tr>"
+    for row in _feature_rows
+)
+st.markdown(f"""
+<table class='data-table' style='margin-top:0.8rem;'>
+  <thead><tr><th>Top feature</th><th>Weight proxy</th><th>Unweighted OOF |SHAP|</th>
+    <th>Repeat rank IQR</th><th>Top-{_protocol['top_k']} frequency</th><th>Weighted |SHAP|*</th></tr></thead>
+  <tbody>{_feature_rows_html}</tbody>
+</table>
+<div class='explain-note' style='margin-top:0.65rem;'>
+  <div class='explain-label'>How to read this evidence</div>
+  <div class='explain-text'>
+    The primary comparison is the <strong>training-derived weighting proxy versus out-of-fold
+    SHAP reliance from an unweighted SVR</strong>. It avoids measuring a model against weights
+    already injected into that model. The weighted-model agreement marked * is reported separately
+    and is descriptive. The primary repeat-level ρ median is
+    {_primary_repeats['spearman_rho']['median']:.3f} (IQR
+    {_primary_repeats['spearman_rho']['q25']:.3f}–{_primary_repeats['spearman_rho']['q75']:.3f});
+    its {_primary_bootstrap['coverage']:.0%} conditional project-resampling percentile interval uses
+    {_primary_bootstrap['resamples']:,} resamples without refitting the pipeline. Results use
+    {_protocol['repeats']} repeated {_protocol['outer_splits']}-fold
+    outer evaluations with {_protocol['inner_splits']}-fold inner selection; only outer-test projects
+    are explained, and every SHAP background contains outer-training projects only. Agreement and
+    stability jointly reflect split, model, background, and explainer-seed changes. They describe model behaviour—they do not establish causal feature effects or validate the
+    data-derived proxy as expert judgment. Secondary pooled agreement: Kendall τ<sub>b</sub>
+    {_primary['kendall_tau_b']:.3f}, Jensen–Shannon similarity
+    {_primary['jensen_shannon_similarity']:.3f}, and top-{_primary['top_k']} Jaccard
+    {_primary['top_k_jaccard']:.3f}. In the narrow {_permutation['permutations']:,}-shuffle
+    feature-label benchmark, the empirical two-sided p-value for ρ is
+    {_permutation['empirical_p_values']['spearman_rho']['empirical_p']:.4f}, while top-{_primary['top_k']}
+    overlap is not unusual (upper-tail p={_permutation['empirical_p_values']['top_k_jaccard']['empirical_p']:.4f}).
+    KernelSHAP uses <code>l1_reg=0</code>, so all 17 features enter the solution. With the model, rows, and
+    background fixed, {_protocol['nsamples']} samples reproduce the 1,024-sample reference ranking at
+    ρ={_numerical_main['global_agreement_to_1024_reference']['spearman_rho']:.3f}; median local cosine is
+    {_numerical_main['local_cosine_to_1024_reference']['median']:.4f}. This numerical audit is not predictive evidence.
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("<div class='section-header'>Current Prediction · Local Explanation</div>", unsafe_allow_html=True)
 
 if not SHAP_AVAILABLE:
-    st.info("SHAP explainability is not available in this deployment environment. All other features work normally.", icon="ℹ️")
+    st.info(
+        "Interactive SHAP for the current inputs is unavailable in this deployment. "
+        "The stored cross-fitted research evidence above remains available.", icon="ℹ️"
+    )
 else:
-    tab1, tab2, tab3 = st.tabs(["Feature Contributions", "FAHP vs SHAP", "Waterfall"])
+    tab1, tab2, tab3 = st.tabs(["Local Contributions", "Local Weight Comparison", "Waterfall"])
     with tab1:
         _fig_bar = plot_shap_bar(sv_pm, effort)
         _ = st.pyplot(_fig_bar, width="stretch"); plt.close(_fig_bar)
-        st.markdown("""<div class='insight-note' style='margin-top:0.4rem;'>
-            <strong>Reading SHAP values:</strong> Each bar is the contribution of that feature
-            relative to the model's <em>average prediction across all 63 training projects</em>
-            — not relative to zero effort. A "Nominal" rating can still push effort up if the
-            training average for that driver was High or Very High
-            (COCOMO-81 teams were experienced 1980s defense engineers).
+        st.markdown(f"""<div class='insight-note' style='margin-top:0.4rem;'>
+            <strong>Local, descriptive explanation:</strong> Each value is relative to the model's
+            expected prediction over the selected <strong>{local_bg_n}-project background</strong>:
+            the COCOMO-81 projects with recorded effort ≤ 600 person-months. This outcome-conditioned
+            background is used only for the interactive display; it is not the training-only background
+            used for the cross-fitted evidence above. SHAP attributes this prediction—it does not show
+            what would happen if a feature were changed.
         </div>""", unsafe_allow_html=True)
     with tab2:
         _fig_fvs = plot_fahp_vs_shap(sv_pm)
         _ = st.pyplot(_fig_fvs, width="stretch"); plt.close(_fig_fvs)
+        _local_agreement = local_agreement_metrics(fahp_w, sv_pm, top_k=_protocol["top_k"])
+        st.markdown(f"""<div class='insight-note' style='margin-top:0.4rem;'>
+            <strong>Descriptive for these inputs only:</strong>
+            Spearman ρ = {_local_agreement['spearman_rho']:.3f} &nbsp;·&nbsp;
+            Kendall τ<sub>b</sub> = {_local_agreement['kendall_tau_b']:.3f} &nbsp;·&nbsp;
+            Jensen–Shannon similarity = {_local_agreement['jensen_shannon_similarity']:.3f} &nbsp;·&nbsp;
+            top-{_local_agreement['top_k']} Jaccard = {_local_agreement['top_k_jaccard']:.3f}.<br>
+            This single-project comparison is not part of the out-of-fold research result and should
+            not be interpreted as a validation score.
+        </div>""", unsafe_allow_html=True)
     with tab3:
         _fig_wf = plot_waterfall(sv_pm, base_pm, effort)
         _ = st.pyplot(_fig_wf, width="stretch"); plt.close(_fig_wf)
 
 # ── Insights ──────────────────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>Key Insights</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-header'>Current-Prediction Attributions</div>", unsafe_allow_html=True)
 if sv_pm is not None:
     top_pos = [(FEATURES[i], sv_pm[i]) for i in np.argsort(sv_pm)[::-1] if sv_pm[i] > 0][:3]
     top_neg = [(FEATURES[i], sv_pm[i]) for i in np.argsort(sv_pm)       if sv_pm[i] < 0][:2]
@@ -1119,104 +1281,60 @@ def _rating_tag(feat):
 
 ic1, ic2 = st.columns(2)
 with ic1:
-    st.markdown("**Effort drivers — pushing up**")
+    st.markdown("**Positive local attributions**")
     for feat, val in top_pos:
         tag = _rating_tag(feat)
         tag_html = f" <span style='font-size:0.75rem;color:#999;font-weight:400;'>({tag})</span>" if tag else ""
         st.markdown(f"""<div class='insight-box insight-up'>
-            <strong>{feat}</strong>{tag_html} &nbsp;·&nbsp; {FEAT_DESC.get(feat,feat)}<br>
-            <span style='font-family:monospace;'>+{val:.1f} PM</span> above baseline
+            <strong>{feat}</strong>{tag_html}<br>
+            <span style='font-family:monospace;'>+{val:.1f} PM</span> relative to the selected background
         </div>""", unsafe_allow_html=True)
 with ic2:
-    st.markdown("**Effort reducers — pushing down**")
+    st.markdown("**Negative local attributions**")
     for feat, val in top_neg:
         tag = _rating_tag(feat)
         tag_html = f" <span style='font-size:0.75rem;color:#999;font-weight:400;'>({tag})</span>" if tag else ""
         st.markdown(f"""<div class='insight-box insight-down'>
-            <strong>{feat}</strong>{tag_html} &nbsp;·&nbsp; {FEAT_DESC.get(feat,feat)}<br>
-            <span style='font-family:monospace;'>{val:.1f} PM</span> below baseline
+            <strong>{feat}</strong>{tag_html}<br>
+            <span style='font-family:monospace;'>{val:.1f} PM</span> relative to the selected background
         </div>""", unsafe_allow_html=True)
 
 # ── FAHP vs SHAP alignment ─────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>FAHP Prior vs SHAP Posterior — Alignment</div>", unsafe_allow_html=True)
-st.markdown("""<div class='explain-note'>
-    <div class='explain-label'>Methodology note</div>
-    <div class='explain-text'>
-        <strong>FAHP weights</strong> capture data-driven feature importance — derived from Spearman
-        correlations between each feature and project-level effort/LOC weights (an indirect proxy for
-        expert pairwise comparisons). <strong>SHAP values</strong> reveal what the trained SVR model
-        actually learned from 63 COCOMO-81 projects. Divergence between the two is itself a research
-        finding: it shows where the FAHP weighting and empirical model behaviour agree or differ.
-    </div>
-</div>""", unsafe_allow_html=True)
-f3 = np.argsort(fahp_w)[::-1][:3]
-if sv_pm is not None:
-    s3 = np.argsort(np.abs(sv_pm))[::-1][:3]
-    agree = len(set(f3) & set(s3)) / 3 * 100
-    colour = "#2E7D32" if agree >= 67 else ("#BF6000" if agree >= 33 else "#C62828")
-    label_agree = "Strong agreement" if agree >= 67 else ("Partial" if agree >= 33 else "Disagreement")
-    ac1, ac2 = st.columns([2.5, 1])
-    with ac1:
-        def _match_badge(i):
-            if f3[i] == s3[i]:
-                return "<span class='match-badge match-aligned'>Aligned</span>"
-            elif f3[i] in s3:
-                return "<span class='match-badge match-partial'>Partial</span>"
-            else:
-                return "<span class='match-badge match-divergent'>Divergent</span>"
-        rows_html = "".join(
-            f"<tr><td>#{i+1}</td><td>{FEATURES[f3[i]]}</td><td>{FEATURES[s3[i]]}</td><td>{_match_badge(i)}</td></tr>"
-            for i in range(3)
-        )
-        st.markdown(f"""
-        <table class='data-table'>
-          <thead><tr>
-            <th>Rank</th><th>FAHP Prior</th><th>SHAP Posterior</th><th>Match</th>
-          </tr></thead>
-          <tbody>{rows_html}</tbody>
-        </table>""", unsafe_allow_html=True)
-    with ac2:
-        st.markdown(f"""<div class='metric-card' style='border-color:{colour};'>
-            <div class='metric-label'>Alignment Score</div>
-            <div class='metric-value' style='color:{colour};'>{agree:.0f}%</div>
-            <div class='metric-unit'>{label_agree}</div>
-        </div>""", unsafe_allow_html=True)
-else:
-    st.info("FAHP vs SHAP alignment requires SHAP explainability, which is not available in this environment.", icon="ℹ️")
 
 # ── What-if ────────────────────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>What-If Analysis — Reduction Opportunities</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-header'>One-at-a-Time Sensitivity Scenarios</div>", unsafe_allow_html=True)
 if wi_results:
     wi_rows = "".join(
-        f"<tr><td>{r['action']}</td>"
+        f"<tr><td>{r['scenario']}</td>"
         f"<td style='font-family:monospace;font-size:0.77rem;color:#555;'>{r['feature']}</td>"
         f"<td>{r['from_']} &rarr; {r['to']}</td>"
-        f"<td style='font-family:monospace;font-weight:600;color:#2E7D32;'>&#8722;{r['saving']:.1f}</td>"
-        f"<td style='font-family:monospace;color:#2E7D32;'>{r['pct']:.1f}%</td></tr>"
+        f"<td style='font-family:monospace;font-weight:600;color:#2E7D32;'>{r['difference']:+.1f}</td>"
+        f"<td style='font-family:monospace;color:#2E7D32;'>{r['pct']:+.1f}%</td></tr>"
         for r in wi_results
     )
     st.markdown(f"""
     <table class='data-table'>
       <thead><tr>
-        <th>Action</th><th>Feature</th><th>Change</th><th>Saves (PM)</th><th>Reduction</th>
+        <th>Scenario</th><th>Feature</th><th>Input change</th><th>Model Δ PM</th><th>Model Δ %</th>
       </tr></thead>
       <tbody>{wi_rows}</tbody>
     </table>""", unsafe_allow_html=True)
     b = wi_results[0]
     st.markdown(f"""<div class='wi-callout'>
-        <strong>Top recommendation:</strong> {b['action']}
+        <strong>Largest modeled one-feature difference:</strong> {b['scenario']}
         &nbsp;&middot;&nbsp; {b['feature']}: {b['from_']} &rarr; {b['to']}
-        &nbsp;&middot;&nbsp; saves <strong>{b['saving']:.0f} PM ({b['pct']:.1f}%)</strong>
+        &nbsp;&middot;&nbsp; model Δ <strong>{b['difference']:+.0f} PM ({b['pct']:+.1f}%)</strong>
         <br><span style='font-size:0.78rem;opacity:0.8;'>
-        Savings are relative to the COCOMO-81 training baseline (1980s defence/aerospace teams).
-        A Nominal-rated driver may still appear as a cost driver if the training average was higher.
+        Each row changes one encoded input while holding all others fixed. It is a sensitivity
+        calculation, not evidence that making the change would cause this outcome or a recommendation
+        that the scenario is feasible, safe, or cost-effective.
         </span>
     </div>""", unsafe_allow_html=True)
 else:
-    st.info("No improvement opportunities — already at optimal settings.")
+    st.info("None of the pre-defined one-step sensitivity scenarios lowered the model estimate by more than 0.5 PM.")
 
-# ── GenAI Impact Analysis ─────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>GenAI Impact Analysis</div>", unsafe_allow_html=True)
+# ── GenAI sensitivity scenario ────────────────────────────────────────────────
+st.markdown("<div class='section-header'>Post-hoc GenAI Sensitivity Scenario</div>", unsafe_allow_html=True)
 if ai_using:
     ga1, ga2 = st.columns([1.5, 1])
     with ga1:
@@ -1226,10 +1344,10 @@ if ai_using:
         ai_pct_lo = (1 - ai_mult_hi) * 100
         ai_pct_hi = (1 - ai_mult_lo) * 100
         st.markdown(f"""<div class='metric-card'>
-            <div class='metric-label'>AI Saving</div>
+            <div class='metric-label'>Assumed Adjustment</div>
             <div class='metric-value' style='color:#16A34A;font-size:1.85rem;'>{ai_pct:.0f}%</div>
-            <div class='metric-unit'>effort reduction</div>
-            <div class='metric-range'>{ai_pct_lo:.0f}–{ai_pct_hi:.0f}% study range</div>
+            <div class='metric-unit'>below unadjusted model estimate</div>
+            <div class='metric-range'>{ai_pct_lo:.0f}–{ai_pct_hi:.0f}% illustrative range</div>
         </div>""", unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown(f"""<div class='metric-card'>
@@ -1242,19 +1360,19 @@ if ai_using:
     st.markdown(f"""<div class='explain-note' style='margin-top:0.8rem;'>
         <div class='explain-label'>Source</div>
         <div class='explain-text'>
-            Productivity multipliers derived from published studies and industry surveys: <strong>{source_text}</strong>.
-            COCOMO-81's TOOL driver caps out at 17% effort reduction; modern AI coding tools
-            measurably exceed this — quantifying that gap is the novel contribution of this work.
+            Illustrative multipliers derived from published task studies and industry surveys:
+            <strong>{source_text}</strong>. They are applied after prediction and were not learned or
+            validated on this dataset. Extending task-level findings to total project effort is an
+            exploratory sensitivity calculation, not a causal estimate or a novelty claim.
         </div>
     </div>""", unsafe_allow_html=True)
 else:
     st.markdown("""<div class='explain-note'>
         <div class='explain-label'>GenAI adjustment disabled</div>
         <div class='explain-text'>
-            Select a GenAI adoption level in the sidebar to model productivity gains from
-            Copilot, ChatGPT, Cursor, or similar AI coding tools.
-            Multipliers are grounded in published research (Peng et al. 2023; McKinsey 2023;
-            Kalliamvakou 2022).
+            Select a GenAI adoption level in the sidebar to apply an illustrative post-hoc
+            multiplier sourced from published task studies and industry reports. The resulting
+            scenario is not learned by this model and should not be treated as a causal forecast.
         </div>
     </div>""", unsafe_allow_html=True)
 
@@ -1264,23 +1382,23 @@ st.markdown("<div class='section-header'>Validation Evidence</div>", unsafe_allo
 ve1, ve2 = st.columns(2)
 
 with ve1:
-    st.markdown("**Ablation: Does FAHP actually help?**")
+    st.markdown("**Ablation: Does the data-derived weighting proxy change error?**")
     if _abl_mmre and _fahp_imp:
         st.markdown(f"""<table class='data-table'>
           <thead><tr><th>Model</th><th>Nested-CV MMRE</th><th>PRED(25)</th></tr></thead>
           <tbody>
-            <tr><td>SVR without FAHP (baseline)</td>
+            <tr><td>Unweighted SVR (baseline)</td>
                 <td style='font-family:monospace;color:#C62828;font-weight:600;'>{_abl_mmre:.4f}</td>
                 <td style='color:#888;'>—</td></tr>
-            <tr><td><strong>SVR with FAHP (this model)</strong></td>
+            <tr><td><strong>SVR with data-derived weights</strong></td>
                 <td style='font-family:monospace;color:#2E7D32;font-weight:600;'>{_nested['mmre']:.4f}</td>
                 <td style='font-family:monospace;color:#2E7D32;font-weight:600;'>{f"{_pred25*100:.0f}%" if _pred25 else "—"}</td></tr>
           </tbody>
         </table>""", unsafe_allow_html=True)
         st.markdown(f"""<div class='wi-callout' style='margin-top:0.5rem;'>
-            In matched nested validation, FAHP weighting changes MMRE by <strong>{_fahp_imp:.1f}%</strong>
+            In matched nested validation, the weighting proxy changes MMRE by <strong>{_fahp_imp:.1f}%</strong>
             — from {_abl_mmre:.4f} to {_nested['mmre']:.4f}. This is a comparison,
-            not proof that FAHP will improve every future dataset.
+            not proof that the weighting method will improve every future dataset.
         </div>""", unsafe_allow_html=True)
     else:
         st.info("Ablation data not available — re-run train_model.py.")
@@ -1343,12 +1461,19 @@ st.markdown(f"""
     <strong>Training data:</strong> {N_81} COCOMO-81 projects (1980s defense/aerospace software).
     The model has no exposure to React, microservices, CI/CD,
     or cloud-native development. Results should be treated as directional estimates, not budget commitments.<br><br>
-    <strong>Method:</strong> Feature weights are derived via Spearman correlation (a data-driven proxy for
-    expert FAHP), and the solver is sklearn SVR rather than the LSSVM in Sehra et al. (2018).
-    The weighted-kernel formulation (Eq.&nbsp;17) is faithfully implemented; the solver and weight-derivation
-    are acknowledged simplifications.<br><br>
+    <strong>Method:</strong> Feature weights are derived from project-level FAHP quantities and Spearman
+    association, so they are a data-derived proxy rather than independent expert judgments. The solver is
+    sklearn SVR, not the weighted-kernel LSSVM studied by Sehra et al. (2019). This implementation is an
+    adaptation inspired by that work, not a faithful reproduction of its complete method.<br><br>
+    <strong>Proxy diagnostic:</strong> On the full dataset, Chang extent analysis assigns non-zero
+    project weights to {_proxy_diagnostics['effort_project_weights_nonzero']}/{_proxy_diagnostics['project_count']}
+    effort entries and {_proxy_diagnostics['loc_project_weights_nonzero']}/{_proxy_diagnostics['project_count']}
+    LOC entries; the effort pairwise consistency ratio is
+    {_proxy_diagnostics['effort_pairwise_consistency_ratio']:.3f}. This sparsity requires sensitivity
+    analysis, and a confirmatory extension still needs frozen expert judgments or a documented new panel.<br><br>
     <strong>GenAI adjustment:</strong> Post-hoc multipliers from external studies, not trained into the model.
-    Applied to total effort; actual productivity gains in coding-only tasks may be higher.
+    Applied to total effort as an illustrative sensitivity scenario; the actual effect may differ
+    and must be measured independently on completed projects.
     The <strong>80% interval</strong> converts the 10th and 90th percentiles of pure nested
     outer-fold signed relative errors using actual = prediction / (1 + error). Roughly 1-in-5
     comparable projects may fall outside this empirical range.
@@ -1361,17 +1486,19 @@ with st.expander("Methodology — how this works", expanded=False):
     st.markdown("""
 **Pipeline overview**
 
-1. **FAHP Feature Weighting** — Chang (1996) extent analysis builds project-level pairwise matrices from the effort/LOC distributions of all 63 training projects. Feature importance is derived via Spearman correlation. Weights embedded as S = diag(√θ) into the SVR kernel.
+1. **Training-derived weighting proxy** — Chang (1996) extent analysis builds project-level pairwise matrices from the effort/LOC distributions of all 63 training projects. Feature weights are then derived by Spearman association with those project weights. This is not an independent expert panel.
 
-2. **Weighted-Kernel SVR** — sklearn SVR with RBF kernel, trained in log-space on COCOMO-81 (n=63). Kernel: K(θxₖ, θxₗ) = exp(−γ‖√θ(xₖ−xₗ)‖²).
+2. **Weighted-feature SVR adaptation** — after log transformation and scaling, inputs are mapped by `S = diag(√θ)` before sklearn's RBF SVR. Equivalently, `K_θ(xₖ,xₗ) = exp(−γ Σⱼ θⱼ(xₖⱼ−xₗⱼ)²)`. This is an SVR adaptation of Sehra et al. (2019), not their LSSVM solver.
 
-3. **Nested validation** — Ten outer folds are used only for evaluation. Within each outer-training partition, five-fold inner CV selects hyperparameters and all scaling/FAHP fitting is repeated without seeing the outer-test rows. The deployment model is selected separately after evaluation.
+3. **Nested validation** — Ten outer folds are used only for evaluation. Within each outer-training partition, five-fold inner CV selects hyperparameters and all scaling/weight-proxy fitting is repeated without seeing the outer-test rows. The deployment model is selected separately after evaluation.
 
 4. **Empirical 80% PI** — 10th/90th percentile of pure outer-fold signed relative errors. No parametric assumption.
 
-5. **SHAP** — KernelExplainer (background=50 representative projects ≤ 600 PM, nsamples=150, seed=42). Background excludes 13 defence mega-programs (up to 11,400 PM) to keep the baseline interpretable (~116 PM, near the geometric mean). SHAP values are in person-months; additivity verified at 0.00% error.
+5. **Cross-fitted SHAP evidence** — ten repeated 5-fold outer evaluations with 3-fold inner selection explain only outer-test projects. Each model-agnostic KernelSHAP background contains all corresponding outer-training projects. The primary agreement analysis compares the training-derived proxy with unweighted-model out-of-fold |SHAP|; weighted-model agreement is descriptive.
 
-6. **GenAI Adjustment** — Post-hoc multiplier from Peng et al. 2023, McKinsey 2023, Kalliamvakou 2022. Not trained into the model.
+6. **Interactive local SHAP** — KernelExplainer uses the selected 50 COCOMO-81 projects with recorded effort ≤ 600 PM as its outcome-conditioned display background (`nsamples=256`, `l1_reg=0`, seed=42). Disabling L1 feature selection keeps all 17 features in the weighted least-squares solution. It explains the displayed prediction in person-months and is separate from the cross-fitted evidence.
+
+7. **GenAI Adjustment** — Post-hoc multiplier from Peng et al. 2023, McKinsey 2023, Kalliamvakou 2022. Not trained into the model.
 """)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1386,7 +1513,7 @@ st.markdown(f"""
     <strong style='color:#333;'>Software Effort Estimator</strong> &nbsp;&middot;&nbsp;
     Research demo &nbsp;&middot;&nbsp; Mitacs Internship Proposal<br>
     Training data: COCOMO-81 (n={n_81_val}) &nbsp;&middot;&nbsp;
-    FAHP (Chang 1996) + Weighted-Kernel SVR (Sehra et al. 2018) &nbsp;&middot;&nbsp;
+    FAHP-inspired SVR adaptation (Sehra et al. 2019) &nbsp;&middot;&nbsp;
     Nested-CV MMRE&nbsp;{mmre_val:.4f} &nbsp;&middot;&nbsp; residual q10/q90&nbsp;[{PI_Q10*100:+.0f}%,&nbsp;{PI_Q90*100:+.0f}%]
   </div>
   <div class='footer-right'>v0.2-demo</div>

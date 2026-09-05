@@ -1,6 +1,8 @@
 """
-train_github_model.py  —  FAHP + SVR on GitHub-derived project metrics
-Same methodology as Sehra et al. (2018), applied to modern GitHub data.
+train_github_model.py  —  supervised association weighting + SVR on GitHub metrics
+This is a complementary modern-data experiment, not a direct reproduction of
+Sehra et al. (2019). Its weights are learned from the effort target rather than
+elicited through expert FAHP pairwise comparisons.
 
 Features: contributor_count, avg_pr_review_days, pr_merge_rate,
           test_file_ratio, lang_count, commit_frequency
@@ -94,61 +96,10 @@ for i, name in enumerate(FEATURE_NAMES):
     print(f"  {name:>25s}: r={corr:+.3f}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1.  FAHP — Chang (1996) extent analysis
+# 1.  SUPERVISED DATA-DERIVED FEATURE WEIGHTING
 # ─────────────────────────────────────────────────────────────────────────────
-TFN_SCALE = {
-    1:(1.,1.,1.), 2:(1.,2.,3.), 3:(1.,3.,5.), 4:(1.,4.,7.),
-    5:(3.,5.,7.), 6:(3.,6.,9.), 7:(5.,7.,9.), 8:(7.,8.,9.), 9:(7.,9.,9.),
-}
-
-def _tfn_recip(tfn):
-    l, m, u = tfn; return (1/u, 1/m, 1/l)
-
-def _ratio_to_tfn(ratio):
-    ratio = max(1/9, min(9., float(ratio)))
-    if ratio < 1.: return _tfn_recip(_ratio_to_tfn(1./ratio))
-    lo, hi = max(1,min(9,int(np.floor(ratio)))), max(1,min(9,int(np.ceil(ratio))))
-    if lo == hi: return TFN_SCALE[lo]
-    t = ratio - lo
-    return tuple(TFN_SCALE[lo][k]*(1-t)+TFN_SCALE[hi][k]*t for k in range(3))
-
-def build_pairwise(values):
-    n = len(values)
-    mat = [[(1.,1.,1.)]*n for _ in range(n)]
-    for i in range(n):
-        for j in range(i+1, n):
-            r = float(values[i]) / float(max(values[j], 1e-9))
-            tfn = _ratio_to_tfn(r)
-            mat[i][j] = tfn
-            mat[j][i] = _tfn_recip(tfn)
-    return mat
-
-def synthetic_extent(mat):
-    n = len(mat)
-    rs = [(sum(mat[i][j][k] for j in range(n)) for k in range(3)) for i in range(n)]
-    rs = [tuple(x) for x in rs]
-    tl = sum(r[0] for r in rs); tm = sum(r[1] for r in rs); tu = sum(r[2] for r in rs)
-    return [(r[0]/tu, r[1]/tm, r[2]/tl) for r in rs]
-
-def degree_of_possibility(M1, M2):
-    _, m1, u1 = M1; l2, m2, _ = M2
-    if m1 >= m2: return 1.0
-    if u1 <= l2: return 0.0
-    denom = (m2-l2)-(m1-u1)
-    if abs(denom) < 1e-10: return 0.0
-    return max(0., min(1., (u1-l2)/denom))
-
-def fahp_weights(values, label=""):
-    mat = build_pairwise(values)
-    S   = synthetic_extent(mat)
-    n   = len(S)
-    W   = np.array([min(degree_of_possibility(S[i],S[j]) for j in range(n) if j!=i) for i in range(n)])
-    t   = W.sum()
-    return W/t if t > 1e-10 else np.ones(n)/n
-
-# Feature weights: normalized Spearman |correlation| with effort
-# Same approach as train_model.py — correlations act as the data-driven
-# proxy for expert pairwise comparisons, then normalized to sum=1.
+# Feature weights are normalized absolute Spearman correlations with effort.
+# This is supervised association weighting, not FAHP or expert elicitation.
 def compute_gh_feature_weights(X_sub, y_sub):
     """Normalized |Spearman(feature, effort)| feature weights from a subset.
 
@@ -163,12 +114,12 @@ def compute_gh_feature_weights(X_sub, y_sub):
     fc = np.clip(fc, 0.01, None)
     return fc / fc.sum()
 
-print("\n-- FAHP: feature weights (Spearman correlation → normalized) --")
-fahp_w = compute_gh_feature_weights(X_raw, y_raw)
+print("\n-- Supervised feature weights (normalized absolute Spearman correlation) --")
+supervised_w = compute_gh_feature_weights(X_raw, y_raw)
 
-print("FAHP feature weights:")
-for i in np.argsort(fahp_w)[::-1]:
-    print(f"  {FEATURE_NAMES[i]:>25s}: {fahp_w[i]:.4f}")
+print("Supervised association weights:")
+for i in np.argsort(supervised_w)[::-1]:
+    print(f"  {FEATURE_NAMES[i]:>25s}: {supervised_w[i]:.4f}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2.  NESTED MODEL SELECTION AND PURE OUTER-FOLD EVALUATION
@@ -184,7 +135,7 @@ RANDOM_STATE = 42
 COMMIT_SAMPLE_LIMIT = 1200
 EFFORT_CAP_AUTHOR_MONTHS = COMMIT_SAMPLE_LIMIT / 20
 
-print("\n-- Nested 10x5 CV: FAHP-weighted GitHub model --")
+print("\n-- Nested 10x5 CV: supervised Spearman-weighted GitHub model --")
 nested = nested_cv_evaluate(
     X_raw,
     y_raw,
@@ -214,7 +165,7 @@ pred50 = nested["pred50"]
 pi_q10 = nested["pi_q10"]
 pi_q90 = nested["pi_q90"]
 ablation_mmre = ablation["mmre"]
-fahp_effect_pct = (ablation_mmre - nested_mmre) / ablation_mmre * 100
+weighting_effect_pct = (ablation_mmre - nested_mmre) / ablation_mmre * 100
 naive_mmre = float(np.mean(np.abs(y_raw - y_raw.mean()) / y_raw))
 
 print(
@@ -222,8 +173,8 @@ print(
     f"PRED(50)={pred50*100:.1f}%"
 )
 print(
-    f"FAHP comparison: unweighted={ablation_mmre:.4f}, weighted={nested_mmre:.4f}, "
-    f"change={fahp_effect_pct:+.1f}%"
+    f"Supervised-weighting comparison: unweighted={ablation_mmre:.4f}, "
+    f"weighted={nested_mmre:.4f}, change={weighting_effect_pct:+.1f}%"
 )
 
 # Actual creation/commit dates were not retained in the current CSV.  Therefore
@@ -263,7 +214,7 @@ final_bundle, deployment_params, deployment_selection_mmre = fit_deployment_mode
 final_model = final_bundle.model
 scaler_X = final_bundle.scaler_X
 scaler_y = final_bundle.scaler_y
-fahp_w = final_bundle.feature_weights
+supervised_w = final_bundle.feature_weights
 kernel_w = final_bundle.kernel_weights
 train_pred = predict_model(final_bundle, X_raw)
 train_mmre = float(np.mean(np.abs(y_raw - train_pred) / y_raw))
@@ -275,7 +226,9 @@ artifacts = {
     "model": final_model,
     "scaler_X": scaler_X,
     "scaler_y": scaler_y,
-    "fahp_weights": fahp_w,
+    "fahp_weights": supervised_w,  # Legacy compatibility key.
+    "feature_weighting_method": "supervised_normalized_absolute_spearman",
+    "expert_derived_weights": False,
     "kernel_w": kernel_w,
     "X_raw": X_raw,
     "y_raw": y_raw,
@@ -295,8 +248,8 @@ artifacts = {
     "pi_hi_pct": pi_q90,
     "residual_definition": "(prediction - actual) / actual",
     "ablation_mmre": round(ablation_mmre, 4),
-    "fahp_effect_pct": round(fahp_effect_pct, 1),
-    "fahp_improve_pct": round(fahp_effect_pct, 1),
+    "fahp_effect_pct": round(weighting_effect_pct, 1),  # Legacy compatibility key.
+    "fahp_improve_pct": round(weighting_effect_pct, 1),  # Legacy compatibility key.
     "naive_mmre": round(naive_mmre, 4),
     "popularity_holdout_mmre": round(popularity["mmre"], 4),
     "popularity_holdout_pred25": round(popularity["pred25"], 4),
@@ -333,10 +286,12 @@ update_metrics(
             "q90": round(pi_q90, 6),
             "source": "pure nested outer-fold signed relative errors",
         },
-        "fahp_comparison": {
+        "fahp_comparison": {  # Legacy compatibility key.
             "weighted_mmre": round(nested_mmre, 4),
             "unweighted_mmre": round(ablation_mmre, 4),
-            "effect_pct": round(fahp_effect_pct, 1),
+            "effect_pct": round(weighting_effect_pct, 1),
+            "method": "supervised_normalized_absolute_spearman",
+            "expert_derived": False,
         },
         "popularity_holdout": {
             "train_n": split_n,
@@ -361,7 +316,7 @@ print(f"\ngithub_model.pkl saved: {out}")
 print(f"Nested CV MMRE : {nested_mmre:.4f}")
 print(f"PRED(25)       : {pred25*100:.1f}%")
 print(f"Unweighted MMRE: {ablation_mmre:.4f}")
-print(f"FAHP effect    : {fahp_effect_pct:+.1f}%")
+print(f"Weighting effect: {weighting_effect_pct:+.1f}%")
 print(f"Popularity hold-out MMRE: {popularity['mmre']:.4f}")
 print(f"Effort proxy cap: approximately {EFFORT_CAP_AUTHOR_MONTHS:.0f} author-months")
 print(f"Deployment HPs: {deployment_params}")

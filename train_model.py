@@ -1,6 +1,6 @@
 """
-train_model.py  —  Sehra et al. (2018) on COCOMO-81 benchmark
-==============================================================
+train_model.py - research prototype inspired by Sehra et al. (2019)
+===================================================================
 
 Dataset: COCOMO-81 (63 projects, 1980s defense/aerospace software)
   - Drops rows with NaN / zero feature values
@@ -14,16 +14,17 @@ Pipeline (mirrored exactly in app.py):
 Run:
   python train_model.py
 
-Author: Sehra et al. 2018 implementation for Mitacs demo
+Methodological inspiration: Sehra et al. (2019). This project is an
+SVR adaptation, not a reproduction of their weighted-kernel LSSVM solver.
 """
 
 import numpy as np
 import pandas as pd
 import pickle
 import os
-import warnings
 from scipy.stats import spearmanr
 
+from explainability import kernel_shap_numerical_sensitivity, repeated_oof_shap_analysis
 from metrics_store import update_metrics
 from validation import (
     fit_deployment_model,
@@ -31,8 +32,6 @@ from validation import (
     nested_cv_evaluate,
     predict_model,
 )
-
-warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 0.  DATA
@@ -173,15 +172,20 @@ def fahp_weights_from_values(values: np.ndarray, label="", verbose=True) -> np.n
     return W_prime / total if total > 1e-10 else np.ones(n) / n
 
 def compute_fahp_feature_weights(X_sub, y_sub, verbose=False):
-    """Full FAHP feature-weight derivation from a subset of projects.
+    """FAHP-inspired, data-derived feature weighting for a project subset.
+
+    Chang extent analysis is applied to effort/LOC project comparisons and the
+    resulting project weights are mapped to features by absolute Spearman
+    association. These are supervised proxy weights, not independent expert
+    pairwise judgments.
 
     Project-level weights via Chang extent analysis on the effort and LOC
     criteria, then feature importance via |Spearman(feature, project_weight)|.
     Returns (fahp_w, W_effort, W_loc, W_project).
 
-    Used BOTH globally (all 63 projects, for the final model) and per-fold
-    inside the LOO loop (n-1 rows) so the held-out project never informs the
-    weights — see compute_loo_folds().
+    Used both globally (all 63 projects, for the deployment model) and inside
+    every inner/outer training partition so held-out outcomes never inform the
+    relevant weights.
     """
     W_eff  = fahp_weights_from_values(y_sub,        label="Effort criterion", verbose=verbose)
     W_loc_ = fahp_weights_from_values(X_sub[:, 0],  label="LOC criterion",    verbose=verbose)
@@ -197,10 +201,10 @@ def compute_fahp_feature_weights(X_sub, y_sub, verbose=False):
     return fw, W_eff, W_loc_, W_proj
 
 # ── 1a/1b. Global feature weights (all 63 projects — used for the final model)
-print("\n── FAHP: computing project weights ──")
+print("\n-- Computing FAHP-inspired, data-derived weighting proxy --")
 fahp_w, W_effort, W_loc, W_project = compute_fahp_feature_weights(X_raw, y_raw, verbose=True)
 
-print("\nFAHP-derived feature weights (top 5):")
+print("\nTraining-derived proxy feature weights (top 5):")
 for idx in np.argsort(fahp_w)[::-1][:5]:
     print(f"  {FEATURE_NAMES[idx]:>14s}: {fahp_w[idx]:.5f}")
 
@@ -216,12 +220,22 @@ OUTER_SPLITS = 10
 INNER_SPLITS = 5
 RANDOM_STATE = 42
 
+# Predeclared pilot protocol for the SHAP research extension. Each project is
+# explained out-of-fold once per repeat, and every background contains only the
+# corresponding outer-training projects.
+XAI_REPEATS = 10
+XAI_OUTER_SPLITS = 5
+XAI_INNER_SPLITS = 3
+XAI_NSAMPLES = 256
+XAI_TOP_K = 3
+XAI_SENSITIVITY_ROWS = 12
+
 
 def cocomo_feature_weights(X_subset, y_subset):
     return compute_fahp_feature_weights(X_subset, y_subset, verbose=False)[0]
 
 
-print("\n-- Nested 10x5 CV: FAHP-weighted model --")
+print("\n-- Nested 10x5 CV: proxy-weighted model --")
 nested = nested_cv_evaluate(
     X_raw,
     y_raw,
@@ -258,9 +272,29 @@ print(
     f"PRED(50)={pred50*100:.1f}%"
 )
 print(
-    f"FAHP comparison: unweighted={ablation_mmre:.4f}, weighted={nested_mmre:.4f}, "
+    f"Weighting comparison: unweighted={ablation_mmre:.4f}, weighted={nested_mmre:.4f}, "
     f"change={fahp_effect_pct:+.1f}%"
 )
+
+print("\n-- Repeated nested out-of-fold KernelSHAP research analysis --")
+explainability, oof_explanation_records = repeated_oof_shap_analysis(
+    X_raw,
+    y_raw,
+    cocomo_feature_weights,
+    PARAM_GRID,
+    FEATURE_NAMES,
+    repeats=XAI_REPEATS,
+    outer_splits=XAI_OUTER_SPLITS,
+    inner_splits=XAI_INNER_SPLITS,
+    background_size=None,
+    nsamples=XAI_NSAMPLES,
+    top_k=XAI_TOP_K,
+    random_state=RANDOM_STATE + 400,
+)
+oof_explanations_path = os.path.join(
+    os.path.dirname(__file__), "explainability_oof.csv"
+)
+pd.DataFrame(oof_explanation_records).to_csv(oof_explanations_path, index=False)
 
 # Per-mode metrics use only pure outer-fold predictions.
 dev_mode_col = df_all["dev_mode"].values
@@ -305,6 +339,40 @@ X_w = scaler_X.transform(np.log(np.clip(X_raw, 1e-3, None))) * kernel_w
 train_pred_pm = predict_model(final_bundle, X_raw)
 train_mmre = float(np.mean(np.abs(y_raw - train_pred_pm) / y_raw))
 train_rmse = float(np.sqrt(np.mean((y_raw - train_pred_pm) ** 2)))
+
+# Hold the deployed model, background, and evaluation rows fixed to isolate
+# KernelSHAP seed/sample-size variation from the joint repeated-CV stability.
+sensitivity_indices = np.unique(
+    np.linspace(0, len(X_raw) - 1, XAI_SENSITIVITY_ROWS, dtype=int)
+)
+explainability["numerical_sensitivity"] = kernel_shap_numerical_sensitivity(
+    final_bundle,
+    X_raw[sensitivity_indices],
+    X_raw,
+    main_nsamples=XAI_NSAMPLES,
+    top_k=XAI_TOP_K,
+    random_state=RANDOM_STATE + 600,
+    sample_sizes=(128, 256, 512),
+    reference_nsamples=1024,
+    seed_count=3,
+)
+explainability["numerical_sensitivity"]["evaluation_row_indices"] = [
+    int(index) for index in sensitivity_indices
+]
+explainability["weighting_proxy"]["full_data_diagnostics"] = {
+    "project_count": int(len(X_raw)),
+    "effort_project_weights_nonzero": int(np.count_nonzero(W_effort > 1e-12)),
+    "loc_project_weights_nonzero": int(np.count_nonzero(W_loc > 1e-12)),
+    "combined_project_weights_nonzero": int(np.count_nonzero(W_project > 1e-12)),
+    "zero_threshold": "1e-12",
+    "effort_pairwise_consistency_ratio": round(
+        consistency_ratio(build_pairwise_matrix(y_raw)), 6
+    ),
+    "loc_pairwise_consistency_ratio": round(
+        consistency_ratio(build_pairwise_matrix(X_raw[:, 0])), 6
+    ),
+    "caveat": "Chang extent analysis produces sparse project weights here; proxy-weight sensitivity and genuine expert elicitation remain required for a confirmatory study.",
+}
 
 # Cross-dataset validation is pure: NASA-93 is never used for model selection.
 nasa93_mmre = None
@@ -360,6 +428,10 @@ artifacts = {
     "residual_definition": "(prediction - actual) / actual",
     "pred25": round(pred25, 4),
     "pred50": round(pred50, 4),
+    "mdmre": round(nested["mdmre"], 4),
+    "mae": round(nested["mae"], 4),
+    "median_absolute_error": round(nested["median_absolute_error"], 4),
+    "rmse": round(nested["rmse"], 4),
     "ablation_mmre": round(ablation_mmre, 4),
     "fahp_effect_pct": round(fahp_effect_pct, 1),
     "fahp_improve_pct": round(fahp_effect_pct, 1),
@@ -372,6 +444,7 @@ artifacts = {
     "project_weights": W_project,
     "X_raw": X_raw,
     "y_raw_pm": y_raw,
+    "explainability": explainability,
 }
 
 out_path = os.path.join(os.path.dirname(__file__), "model.pkl")
@@ -396,6 +469,12 @@ update_metrics(
             "mmre": round(nested_mmre, 4),
             "pred25": round(pred25, 4),
             "pred50": round(pred50, 4),
+            "mdmre": round(nested["mdmre"], 4),
+            "mae_person_months": round(nested["mae"], 4),
+            "median_absolute_error_person_months": round(
+                nested["median_absolute_error"], 4
+            ),
+            "rmse_person_months": round(nested["rmse"], 4),
         },
         "prediction_interval": {
             "coverage": 0.80,
@@ -407,16 +486,23 @@ update_metrics(
             "weighted_mmre": round(nested_mmre, 4),
             "unweighted_mmre": round(ablation_mmre, 4),
             "effect_pct": round(fahp_effect_pct, 1),
+            "weighted_mdmre": round(nested["mdmre"], 4),
+            "unweighted_mdmre": round(ablation["mdmre"], 4),
+            "weighted_mae_person_months": round(nested["mae"], 4),
+            "unweighted_mae_person_months": round(ablation["mae"], 4),
         },
         "external_nasa93": {
             "n": n_nasa93_valid,
             "mmre": round(nasa93_mmre, 4) if nasa93_mmre is not None else None,
             "pred25": round(nasa93_pred25, 4) if nasa93_pred25 is not None else None,
+            "mdmre": round(nasa_metrics["mdmre"], 4) if nasa93_mmre is not None else None,
+            "mae_person_months": round(nasa_metrics["mae"], 4) if nasa93_mmre is not None else None,
             "role": "external test; never used for selection",
         },
         "deployment_params": deployment_params,
         "deployment_inner_cv_mmre": round(deployment_selection_mmre, 4),
         "mode_metrics": mode_mmre_results,
+        "explainability": explainability,
     },
     methodology=methodology,
 )
@@ -425,8 +511,29 @@ print(f"\nmodel.pkl saved: {out_path}")
 print(f"Nested CV MMRE : {nested_mmre:.4f}")
 print(f"PRED(25)       : {pred25*100:.1f}%")
 print(f"Unweighted MMRE: {ablation_mmre:.4f}")
-print(f"FAHP effect    : {fahp_effect_pct:+.1f}%")
+print(f"Weighting effect: {fahp_effect_pct:+.1f}%")
 if nasa93_mmre is not None:
     print(f"NASA-93 MMRE   : {nasa93_mmre:.4f} (pure external test, n={n_nasa93_valid})")
 print(f"Residual q10/q90: {pi_q10:+.4f}, {pi_q90:+.4f}")
 print(f"Deployment HPs : {deployment_params}")
+print(
+    "Primary weighting-proxy/unweighted-SHAP rho: "
+    f"{explainability['primary_alignment']['spearman_rho']:+.3f}"
+)
+rho_interval = explainability["primary_alignment_project_bootstrap"]["metrics"][
+    "spearman_rho"
+]
+print(
+    "Conditional project-resampling 95% rho interval: "
+    f"[{rho_interval['lower']:+.3f}, {rho_interval['upper']:+.3f}]"
+)
+print(
+    "Unweighted SHAP repeat stability rho: "
+    f"{explainability['unweighted_global_ranking_stability']['spearman_rho']['median']:+.3f} median"
+)
+repeated_accuracy = explainability["repeated_accuracy_descriptive"]
+print(
+    "Proxy weighting lowered repeated-CV MMRE in "
+    f"{repeated_accuracy['weighted_better_repeat_count']}/{repeated_accuracy['repeat_count']} repeats"
+)
+print(f"OOF explanation records: {oof_explanations_path}")

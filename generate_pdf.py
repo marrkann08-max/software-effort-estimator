@@ -34,6 +34,28 @@ NASA = C["external_nasa93"]
 POPULARITY = G["popularity_holdout"]
 C_PI = C["prediction_interval"]
 PROXY = G["effort_proxy"]
+EXPLAIN = C["explainability"]
+EX_PROTOCOL = EXPLAIN["protocol"]
+EX_PRIMARY = EXPLAIN["primary_alignment"]
+EX_PRIMARY_REPEATS = EXPLAIN["primary_alignment_across_repeats"]
+EX_WEIGHTED = EXPLAIN["weighted_alignment_descriptive"]
+EX_WEIGHTED_REPEATS = EXPLAIN["weighted_alignment_across_repeats_descriptive"]
+EX_UNWEIGHTED_GLOBAL_STABILITY = EXPLAIN["unweighted_global_ranking_stability"]
+EX_UNWEIGHTED_LOCAL_STABILITY = EXPLAIN["unweighted_local_stability"]
+EX_WEIGHTED_GLOBAL_STABILITY = EXPLAIN["weighted_global_ranking_stability"]
+EX_WEIGHTED_LOCAL_STABILITY = EXPLAIN["weighted_local_stability"]
+EX_BOOTSTRAP = EXPLAIN["primary_alignment_project_bootstrap"]
+EX_PERMUTATION = EXPLAIN["feature_label_permutation_null"]
+EX_NUMERICAL = EXPLAIN["numerical_sensitivity"]
+EX_NUMERICAL_MAIN = next(
+    row for row in EX_NUMERICAL["sample_size_results"]
+    if row["nsamples"] == EX_PROTOCOL["nsamples"]
+)
+EX_PROXY_DIAGNOSTICS = EXPLAIN["weighting_proxy"]["full_data_diagnostics"]
+EX_REPEAT_ACCURACY = EXPLAIN["repeated_accuracy_descriptive"]
+EX_TOP_FEATURES = sorted(
+    EXPLAIN["feature_table"], key=lambda row: row["unweighted_shap_rank"]
+)[:5]
 
 pdfmetrics.registerFont(TTFont("AppSans", r"C:\Windows\Fonts\arial.ttf"))
 pdfmetrics.registerFont(TTFont("AppSans-Bold", r"C:\Windows\Fonts\arialbd.ttf"))
@@ -196,7 +218,7 @@ def on_page(canvas, doc):
     canvas.line(ML, MB - 6, W - MR, MB - 6)
     canvas.setFont("AppSans", 7)
     canvas.setFillColor(LIGHT)
-    canvas.drawString(ML, MB - 14, "FAHP · Weighted-Kernel SVR · SHAP · Mitacs Accelerate Research")
+    canvas.drawString(ML, MB - 14, "FAHP-inspired proxy · Weighted RBF-SVR · OOF KernelSHAP · Mitacs Research")
     canvas.drawRightString(W - MR, MB - 14, "Confidential — Research Demo")
     canvas.restoreState()
 
@@ -220,7 +242,7 @@ story += [
 
 cover_table = Table([
     [Paragraph("<b>Methodology</b>", LABEL),
-     Paragraph("FAHP (Chang 1996) + Weighted-Kernel SVR (Sehra et al. 2018) + SHAP", BODY)],
+     Paragraph("Sehra et al. (2019)-inspired weighted RBF-SVR + leakage-safe OOF KernelSHAP", BODY)],
     [Paragraph("<b>Training Data</b>", LABEL),
      Paragraph(f"COCOMO-81 ({C['n']} projects) · GitHub open-source ({G['n']} repos)", BODY)],
     [Paragraph("<b>Validation</b>", LABEL),
@@ -255,12 +277,12 @@ story += [
     grounded approach. It said: <i>if you tell me the size of the codebase and 15 project
     attributes, I can give you a reliable effort estimate.</i>"""),
     sp(),
-    p("""This tool builds on that foundation and extends it in three ways:"""),
-    bullet("<b>Better feature weighting</b> — Fuzzy AHP (FAHP) assigns each cost driver a mathematically derived importance score, so the model knows which factors matter most for your type of project."),
+    p("""This research prototype builds on that foundation in three ways:"""),
+    bullet("<b>Training-derived weighting</b> — a data-derived FAHP-inspired proxy assigns feature weights inside each training fold. It is not an independent panel of expert judgements."),
     bullet("<b>Non-linear learning</b> — Support Vector Regression (SVR) with a weighted kernel learns patterns from historical data and is evaluated separately from the original multiplicative COCOMO formula."),
-    bullet("<b>Explainability</b> — SHAP values break down every prediction into per-feature contributions in person-months, so you know <i>why</i> the estimate is what it is."),
+    bullet("<b>Explainability</b> — KernelSHAP attributes each model output to its inputs, in person-months, relative to a stated background dataset. These are model attributions, not causal effects."),
     sp(),
-    callout("Think of it like this: COCOMO is a recipe from 1981 written for defence projects. This tool is the same recipe, upgraded with a modern oven, better ingredients, and a chef who explains every step.", BLUE_LIGHT, BLUE),
+    callout("This is an adaptation, not a reproduction, of Sehra et al. (2019): their study used FAHP-weighted LSSVM, whereas this prototype uses a training-derived weighting proxy with sklearn SVR and adds an out-of-fold KernelSHAP analysis.", BLUE_LIGHT, BLUE),
     sp(12),
 
     p("1.1 The Core Metric: MMRE", H2),
@@ -303,7 +325,7 @@ story += [
             ["Semi-detached", "Mixed experience, moderate constraints", "3.0", "1.12", "Mid-size commercial software"],
             ["Embedded", "Hard real-time, safety-critical, tight hardware constraints", "3.6", "1.20", "Avionics, medical devices"],
         ],
-        col_widths=[2.8*cm, 6.5*cm, 1*cm, 1*cm, 5.3*cm]
+        col_widths=[3.2*cm, 5.8*cm, 1.4*cm, 1.4*cm, 4.8*cm]
     ),
     sp(),
     p("2.2 The 15 Cost Drivers (EAF)", H2),
@@ -331,7 +353,7 @@ story += [
             ["Project",  "TOOL", "Software tools quality", "1.24 → 0.83"],
             ["Project",  "SCED", "Schedule constraint", "1.23 → 1.10"],
         ],
-        col_widths=[2.2*cm, 1.5*cm, 9*cm, 3.9*cm]
+        col_widths=[2.2*cm, 1.8*cm, 8.7*cm, 3.9*cm]
     ),
     sp(),
     callout("""<b>Example:</b> A 50 KLOC Organic project with all Nominal ratings gives:<br/>
@@ -346,9 +368,11 @@ story += [
 # ── SECTION 3: FAHP ──────────────────────────────────────────────────────────
 story += [
     p("3. Fuzzy Analytic Hierarchy Process (FAHP)", H1), rule(BLUE_BDR),
-    p("""COCOMO treats all 15 cost drivers as equally important to the prediction task —
-    it just multiplies them all together. But in reality, some features matter much more
-    than others. <b>FAHP is how we discover and encode that importance.</b>"""),
+    p("""COCOMO uses calibrated effort multipliers whose ranges differ by cost driver; it
+    does not provide a separate, learned ranking of feature importance. Sehra et al. (2019)
+    addressed feature ranking with FAHP before integrating the resulting weights into an
+    LSSVM. The present sklearn-SVR implementation uses a <b>training-derived FAHP-inspired proxy</b>
+    and must not be described as a faithful reproduction of that method."""),
     sp(),
 
     p("3.1 What Is the Analytic Hierarchy Process?", H2),
@@ -360,6 +384,9 @@ story += [
     "CPLX is 3× more important than LEXP" is hard to justify exactly.
     <b>Fuzzy AHP</b> replaces exact numbers with triangular fuzzy numbers (TFNs) that
     capture this uncertainty."""),
+    p("""That is the motivation for expert-elicited FAHP. No independent expert panel was
+    available for this prototype, so its current weights are supervised, data-derived proxies.
+    A paper should keep that distinction explicit."""),
     sp(),
 
     p("3.2 Triangular Fuzzy Numbers", H2),
@@ -382,58 +409,39 @@ story += [
     ),
     sp(),
 
-    p("3.3 Chang's Extent Analysis (1996)", H2),
-    p("""This model uses Chang's extent analysis to derive feature weights from the
-    pairwise comparison matrices. The algorithm has three steps:"""),
+    p("3.3 Training-Derived FAHP-Inspired Proxy Used Here", H2),
+    p("""The implemented COCOMO weighting procedure operates only on the relevant training
+    rows and has three stages:"""),
     sp(),
-    bullet("<b>Step 1 — Build pairwise matrices:</b> For each pair of features (i, j), compute the importance ratio r = corr(feature_i, effort) / corr(feature_j, effort) using Spearman correlations with the training data. Convert r to a TFN. Build an n×n matrix of TFNs.", "1."),
+    bullet("<b>Step 1 — Project comparisons:</b> Build separate fuzzy pairwise matrices across training projects from their effort and LOC ratios; outer-test outcomes never enter these matrices.", "1."),
     sp(4),
-    bullet("<b>Step 2 — Synthetic extent values:</b> For each feature i, sum across all j to get a fuzzy row sum S_i = (l_i, m_i, u_i). Normalise to get the synthetic extent value.", "2."),
+    bullet("<b>Step 2 — Project weights:</b> Apply Chang's synthetic-extent and degree-of-possibility calculations to obtain effort-based and LOC-based project weights, then average and normalise them.", "2."),
     sp(4),
     formula_box("S_i = (Σ_j l_ij / Σ_i Σ_j u_ij ,  Σ_j m_ij / Σ_i Σ_j m_ij ,  Σ_j u_ij / Σ_i Σ_j l_ij)"),
     sp(4),
-    bullet("<b>Step 3 — Degree of possibility:</b> For each feature i, compute V(S_i ≥ S_j) for all j ≠ i. The weight of feature i is the minimum of these values, then normalise.", "3."),
+    bullet("<b>Step 3 — Feature proxy weights:</b> Take the absolute Spearman association between each feature and the combined project weights, clip degenerate values, and normalise across features.", "3."),
     sp(4),
-    formula_box("V(S_i ≥ S_j) = 1 if m_i ≥ m_j,   0 if l_j ≥ u_i,   else (l_j - u_i) / ((m_i - u_i) - (m_j - l_j))"),
-    sp(4),
-    formula_box("weight_i = min_{j≠i} V(S_i ≥ S_j)   →   normalise so Σ weights = 1"),
+    formula_box("theta_i = normalise(|Spearman(feature_i, combined training-project weight)|)"),
+    sp(),
+    callout("""<b>Scope:</b> These weights are useful as a supervised ranking and kernel-scaling
+    mechanism, but they are not independent expert priors. A faithful replication-and-extension
+    study should obtain the original expert judgements or elicit a new documented panel.""", AMBER_BG, AMBER),
     sp(),
 
-    p("3.4 Worked Example: 3 Features", H2),
-    p("""Suppose we have 3 features with Spearman correlations with effort:
-    CPLX (r=0.65), ACAP (r=0.50), LEXP (r=0.20). We build a 3×3 pairwise matrix:"""),
-    sp(),
-    data_table(
-        ["", "CPLX", "ACAP", "LEXP"],
-        [
-            ["CPLX", "(1,1,1)",   "(1,2,3)",   "(3,5,7)"],
-            ["ACAP", "(1/3,1/2,1)","(1,1,1)", "(1,3,5)"],
-            ["LEXP", "(1/7,1/5,1/3)","(1/5,1/3,1)","(1,1,1)"],
-        ],
-        col_widths=[2*cm, 5*cm, 5*cm, 4.6*cm]
-    ),
-    p("""After running Chang's extent analysis, we might get weights like:"""),
-    data_table(
-        ["Feature", "FAHP weight", "Interpretation"],
-        [
-            ["CPLX", "0.52", "Most important — dominates prediction"],
-            ["ACAP", "0.35", "Moderately important"],
-            ["LEXP", "0.13", "Less important"],
-        ],
-        col_widths=[3*cm, 4*cm, 9.6*cm]
-    ),
-    callout("""<b>Key insight:</b> FAHP doesn't just rank features — it produces weights that are
-    embedded directly into the SVR kernel. A feature with weight 0.52 will have its
-    distances measured ~4× more carefully than one with weight 0.13. Whether this lowers
-    prediction error is measured by the matched weighted/unweighted nested-validation comparison.""", BLUE_LIGHT, BLUE),
+    p("3.4 How the Proxy Enters the Kernel", H2),
+    p("""The normalised proxy vector theta is applied as an element-wise square-root
+    transformation before the RBF kernel. This makes theta the coefficient of each feature's
+    squared-distance contribution. Predictive benefit is assessed separately with a matched,
+    independently tuned weighted-versus-unweighted nested-validation comparison."""),
 ]
 
 
 # ── SECTION 4: SVR ───────────────────────────────────────────────────────────
 story += [
     p("4. Weighted-Kernel Support Vector Regression (SVR)", H1), rule(BLUE_BDR),
-    p("""Once FAHP gives us feature weights, we need a model that can learn non-linear
-    patterns from the 63 COCOMO-81 training projects. That model is SVR."""),
+    p("""Once the training-derived proxy produces feature weights, an SVR learns non-linear
+    patterns from the 63 COCOMO-81 projects. This is sklearn epsilon-SVR, not the LSSVM solver
+    used by Sehra et al. (2019)."""),
     sp(),
 
     p("4.1 What Is SVR?", H2),
@@ -459,20 +467,16 @@ story += [
     tuned by cross-validation."""),
     sp(),
 
-    p("4.3 The FAHP Weighting — The Core Innovation", H2),
-    p("""Here is where FAHP and SVR connect. Instead of measuring distance equally
-    across all features, we <b>stretch the feature space</b> by the FAHP weights.
-    Features that matter more are measured more carefully:"""),
-    formula_box("K_FAHP(x_i, x_j) = exp(-γ × ||√θ · (x_i - x_j)||²)"),
-    p("""Where θ is the vector of FAHP weights and √θ is applied element-wise.
+    p("4.3 Training-Derived Weighting in the RBF Kernel", H2),
+    p("""Instead of measuring distance equally across all features, the implementation
+    rescales the feature space with the training-derived proxy weights:"""),
+    formula_box("K_theta(x_i, x_j) = exp(-gamma × ||sqrt(theta) · (x_i - x_j)||²)"),
+    p("""Where theta is the vector of normalised proxy weights and sqrt(theta) is applied element-wise.
     This is equivalent to:"""),
-    formula_box("x_weighted = x × √θ"),
-    p("""<b>Concretely:</b> if ACAP has FAHP weight 0.35 and LEXP has weight 0.05,
-    then the weight ratio is 0.35/0.05 = 7.0×. Because the kernel uses <i>squared</i>
-    distance, the effective distance scaling factor is √7.0 = 2.6× — meaning a
-    difference in ACAP is measured 2.6× more sensitively in distance terms than
-    the same numerical difference in LEXP. The kernel "pays more attention"
-    to the features that matter."""),
+    formula_box("x_weighted = x × sqrt(theta)"),
+    p("""A larger theta therefore gives that feature a larger coefficient in squared RBF
+    distance. This changes the model's geometry; it does not establish that the feature is a
+    causal effort driver."""),
     sp(),
 
     p("4.4 The Full Training Pipeline", H2),
@@ -481,7 +485,7 @@ story += [
         [
             ["1. Log transform", "x → log(x),  y → log(1 + y)", "Effort is right-skewed; log space makes it more symmetric"],
             ["2. Scale", "MinMaxScaler to [0, 1]", "SVR is sensitive to feature scale differences"],
-            ["3. FAHP weight", "x_weighted = x_scaled × √(FAHP_weights)", "Embeds feature importance into kernel distance"],
+            ["3. Proxy weight", "x_weighted = x_scaled × sqrt(theta)", "Rescales each feature's contribution to RBF distance"],
             ["4. SVR fit", "SVR(RBF, C, γ, ε).fit(X_weighted, y_scaled)", "Learn non-linear effort surface"],
             ["5. Predict", "Predict → inverse-scale → expm1", "Convert back from log-space to person-months"],
         ],
@@ -499,103 +503,181 @@ story += [
     callout("""<b>Why nested validation?</b> A single resampling loop cannot both choose
     hyperparameters and provide an untouched performance estimate. Ten outer folds are used
     only for evaluation; within each outer-training partition, five inner folds select C,
-    gamma and epsilon. Scaling and FAHP weights are also fitted only on the relevant training
+    gamma and epsilon. Scaling and training-derived proxy weights are also fitted only on the relevant training
     rows. Deployment parameters are selected separately after evaluation.""", AMBER_BG, AMBER),
 ]
 
 
 # ── SECTION 5: SHAP ──────────────────────────────────────────────────────────
 story += [
-    p("5. SHAP Explainability", H1), rule(BLUE_BDR),
-    p("""SHAP (SHapley Additive exPlanations, Lundberg & Lee 2017) answers:
-    <i>"The model predicted 180 person-months — how much did each feature contribute?"</i>
-    This matters because a number without a reason is useless for planning."""),
+    p("5. Out-of-Fold KernelSHAP Analysis", H1), rule(BLUE_BDR),
+    p("""SHAP (SHapley Additive exPlanations; Lundberg and Lee, 2017) decomposes a
+    <b>model output</b> relative to an expected output defined by a background dataset.
+    Because the complete prediction function returns person-months, these attributions are
+    also expressed in person-months. They describe model behaviour, not real-world causality."""),
+    formula_box("model prediction = expected model output over background + sum of SHAP attributions"),
     sp(),
 
-    p("5.1 The Shapley Value Concept", H2),
-    p("""Shapley values come from cooperative game theory. Imagine each feature is a
-    "player" contributing to the prediction "game". The Shapley value of a feature
-    is its <b>average marginal contribution</b> across all possible orderings of features."""),
+    p("5.1 Leakage-Safe Repeated Protocol", H2),
+    p(f"""The research analysis uses <b>{EX_PROTOCOL['repeats']} repeats of
+    {EX_PROTOCOL['outer_splits']}-fold outer validation</b>, with
+    {EX_PROTOCOL['inner_splits']}-fold inner selection. In every outer fold, preprocessing,
+    the training-derived weighting proxy, and hyperparameters are fitted without the outer-test
+    projects. KernelSHAP then explains only those outer-test predictions, so every project is
+    explained once per repeat."""),
+    bullet(f"<b>Explainer:</b> {EX_PROTOCOL['explainer']}"),
+    bullet(f"<b>Background:</b> {EX_PROTOCOL['background_size']}; {EX_PROTOCOL['background_source']}"),
+    bullet(f"<b>Sampling:</b> nsamples={EX_PROTOCOL['nsamples']}, l1_reg={EX_PROTOCOL['l1_reg']}; all 17 features enter the weighted least-squares solution"),
+    bullet(f"<b>Additivity check:</b> maximum stored error = {EXPLAIN['max_additivity_error_person_months']:.6f} person-months"),
     sp(),
-    p("""In plain English: SHAP asks "if we added feature X to the model after considering
-    all possible subsets of other features, what would it add to the prediction on average?"
-    This gives a fair, mathematically rigorous attribution."""),
-    sp(),
-    formula_box("prediction = base_value + Σ SHAP_value(feature_i)"),
-    p("""The base value is the model's average prediction across all training projects.
-    Each SHAP value is in the same units as the prediction (person-months), so you can say:
-    "High CPLX added +23 PM above the baseline."  """),
-    sp(),
-
-    p("5.2 KernelExplainer for SVR", H2),
-    p("""SVR doesn't have a closed-form SHAP solution like tree models do.
-    This tool uses <b>KernelExplainer</b> (model-agnostic SHAP), which:"""),
-    bullet("Samples 30 background projects from the training set"),
-    bullet("Evaluates the full pipeline (log → scale → weight → SVR → inverse-scale → expm1) on 150 random feature coalitions"),
-    bullet("Fits a weighted linear model to approximate SHAP values for the current project"),
-    sp(),
-    p("""The SHAP values are computed in the <b>original raw feature space</b>, so each
-    value directly represents person-month impact — not some abstract scaled quantity."""),
+    callout("""<b>Primary comparison:</b> the training-derived FAHP-inspired proxy is compared with
+    normalised mean absolute out-of-fold SHAP reliance from an <i>unweighted</i> SVR. This is
+    the cleaner comparison because the proxy weights were not injected into that model.
+    Agreement with weighted-model SHAP is reported separately and is descriptive: some of it
+    may be induced by the weighted kernel itself.""", BLUE_LIGHT, BLUE),
     sp(),
 
-    p("5.3 Reading SHAP Outputs", H2),
+    p("5.2 Agreement Results", H2),
     data_table(
-        ["Chart", "What to read"],
+        ["Comparison", "Spearman rho", "Kendall tau-b", "JS similarity", "Top-3 Jaccard / Kuncheva"],
         [
-            ["Feature Contributions bar", "Red bars = features pushing effort UP above baseline.\nBlue bars = features pushing effort DOWN. Bar length = magnitude in PM."],
-            ["Waterfall chart", "Shows the cumulative path from baseline (avg PM) to your prediction. Each step adds or subtracts PM."],
-            ["FAHP vs SHAP bar chart", "Compares the prior weights (what FAHP thought mattered) vs posterior importance (what the trained model actually learned). Divergence is a research finding."],
+            ["Primary pooled: proxy vs unweighted OOF SHAP",
+             f"{EX_PRIMARY['spearman_rho']:.6f}", f"{EX_PRIMARY['kendall_tau_b']:.6f}",
+             f"{EX_PRIMARY['jensen_shannon_similarity']:.6f}",
+             f"{EX_PRIMARY['top_k_jaccard']:.6f} / {EX_PRIMARY['top_k_kuncheva']:.6f} ({EX_PRIMARY['top_k_intersection']}/3 shared)"],
+            ["Primary repeat median [min, max]",
+             f"{EX_PRIMARY_REPEATS['spearman_rho']['median']:.6f}<br/>[{EX_PRIMARY_REPEATS['spearman_rho']['minimum']:.6f}, {EX_PRIMARY_REPEATS['spearman_rho']['maximum']:.6f}]",
+             f"{EX_PRIMARY_REPEATS['kendall_tau_b']['median']:.6f}<br/>[{EX_PRIMARY_REPEATS['kendall_tau_b']['minimum']:.6f}, {EX_PRIMARY_REPEATS['kendall_tau_b']['maximum']:.6f}]",
+             f"{EX_PRIMARY_REPEATS['jensen_shannon_similarity']['median']:.6f}<br/>[{EX_PRIMARY_REPEATS['jensen_shannon_similarity']['minimum']:.6f}, {EX_PRIMARY_REPEATS['jensen_shannon_similarity']['maximum']:.6f}]",
+             f"{EX_PRIMARY_REPEATS['top_k_jaccard']['median']:.6f} / {EX_PRIMARY_REPEATS['top_k_kuncheva']['median']:.6f}"],
+            ["Weighted pooled (descriptive; partly induced)",
+             f"{EX_WEIGHTED['spearman_rho']:.6f}", f"{EX_WEIGHTED['kendall_tau_b']:.6f}",
+             f"{EX_WEIGHTED['jensen_shannon_similarity']:.6f}",
+             f"{EX_WEIGHTED['top_k_jaccard']:.6f} / {EX_WEIGHTED['top_k_kuncheva']:.6f} ({EX_WEIGHTED['top_k_intersection']}/3 shared)"],
+            ["Weighted repeat median [min, max]",
+             f"{EX_WEIGHTED_REPEATS['spearman_rho']['median']:.6f}<br/>[{EX_WEIGHTED_REPEATS['spearman_rho']['minimum']:.6f}, {EX_WEIGHTED_REPEATS['spearman_rho']['maximum']:.6f}]",
+             f"{EX_WEIGHTED_REPEATS['kendall_tau_b']['median']:.6f}<br/>[{EX_WEIGHTED_REPEATS['kendall_tau_b']['minimum']:.6f}, {EX_WEIGHTED_REPEATS['kendall_tau_b']['maximum']:.6f}]",
+             f"{EX_WEIGHTED_REPEATS['jensen_shannon_similarity']['median']:.6f}<br/>[{EX_WEIGHTED_REPEATS['jensen_shannon_similarity']['minimum']:.6f}, {EX_WEIGHTED_REPEATS['jensen_shannon_similarity']['maximum']:.6f}]",
+             f"{EX_WEIGHTED_REPEATS['top_k_jaccard']['median']:.6f} / {EX_WEIGHTED_REPEATS['top_k_kuncheva']['median']:.6f}"],
         ],
-        col_widths=[4.5*cm, 12.1*cm]
+        col_widths=[5.3*cm, 2.5*cm, 2.5*cm, 2.5*cm, 3.8*cm]
     ),
     sp(),
-    callout("""<b>Note on the baseline value:</b> The SHAP base value is the mean model prediction
-    over the background dataset. This tool uses the 50 training projects with effort ≤ 600 PM
-    (80th percentile) as the representative background (seed=42, stable across runs).
-    The 13 excluded projects are 1980s defence mega-programs (up to 11,400 PM) whose inclusion
-    would push the base to 620 PM — making every modern-project waterfall open at an unintuitive
-    starting point 4–6× the final prediction.
-    The representative background gives a base of <b>~116 PM</b>, close to the geometric mean
-    of the training distribution (127 PM). SHAP values remain in person-months throughout;
-    additivity verified at 0.00% error. See Section 9 for a worked example with real output.""",
-    BLUE_LIGHT, BLUE),
+    p("""The primary pooled rank association is moderate, while only one of the three
+    highest-ranked features is shared. The larger weighted-model association must not be read
+    as independent confirmation because the proxy weights alter that model's geometry."""),
+    p(f"""A {EX_BOOTSTRAP['resamples']:,}-resample project-level percentile procedure gives
+    a conditional {EX_BOOTSTRAP['coverage']:.0%} interval for primary Spearman rho of
+    [{EX_BOOTSTRAP['metrics']['spearman_rho']['lower']:.6f},
+    {EX_BOOTSTRAP['metrics']['spearman_rho']['upper']:.6f}] (resampling median
+    {EX_BOOTSTRAP['metrics']['spearman_rho']['median']:.6f}). Projects are resampled after
+    averaging their repeated OOF explanations. It does not refit models, regenerate splits,
+    retune hyperparameters, or rerun the explainer, so it is not a full uncertainty interval."""),
     sp(),
-    callout("""<b>Important caveat — Nominal ratings can still show large SHAP values.</b>
-    SHAP is always relative to the <i>training mean</i>, not to a "zero effort" baseline.
-    If the 63 COCOMO-81 training projects averaged High TIME constraints, then a project
-    with Nominal TIME will show a <i>negative</i> SHAP value — not because Nominal TIME
-    reduces effort in absolute terms, but because it is below the training average.
-    Similarly, Dev Mode encoded as an ordinal can absorb large SHAP values if it is the
-    strongest separator in the training data. Always read SHAP values as
-    "relative to what the model typically sees", not as absolute effort drivers.""",
-    AMBER_BG, AMBER),
+
+    p("5.3 Repeat Stability", H2),
+    data_table(
+        ["Primary unweighted evidence", "Pairs", "Statistic", "Median [min, max]"],
+        [
+            ["Joint repeat ranking", f"{EX_UNWEIGHTED_GLOBAL_STABILITY['pair_count']}", "Spearman rho",
+             f"{EX_UNWEIGHTED_GLOBAL_STABILITY['spearman_rho']['median']:.6f} [{EX_UNWEIGHTED_GLOBAL_STABILITY['spearman_rho']['minimum']:.6f}, {EX_UNWEIGHTED_GLOBAL_STABILITY['spearman_rho']['maximum']:.6f}]"],
+            ["Joint repeat ranking", f"{EX_UNWEIGHTED_GLOBAL_STABILITY['pair_count']}", "Kendall tau-b",
+             f"{EX_UNWEIGHTED_GLOBAL_STABILITY['kendall_tau_b']['median']:.6f} [{EX_UNWEIGHTED_GLOBAL_STABILITY['kendall_tau_b']['minimum']:.6f}, {EX_UNWEIGHTED_GLOBAL_STABILITY['kendall_tau_b']['maximum']:.6f}]"],
+            ["Joint repeat ranking", f"{EX_UNWEIGHTED_GLOBAL_STABILITY['pair_count']}", "Top-3 Jaccard",
+             f"{EX_UNWEIGHTED_GLOBAL_STABILITY['top_k_jaccard']['median']:.6f} [{EX_UNWEIGHTED_GLOBAL_STABILITY['top_k_jaccard']['minimum']:.6f}, {EX_UNWEIGHTED_GLOBAL_STABILITY['top_k_jaccard']['maximum']:.6f}]"],
+            ["Joint local attribution", f"{EX_UNWEIGHTED_LOCAL_STABILITY['comparison_count']}", "Cosine similarity",
+             f"{EX_UNWEIGHTED_LOCAL_STABILITY['cosine_similarity']['median']:.6f} [{EX_UNWEIGHTED_LOCAL_STABILITY['cosine_similarity']['minimum']:.6f}, {EX_UNWEIGHTED_LOCAL_STABILITY['cosine_similarity']['maximum']:.6f}]"],
+            ["Joint local attribution", f"{EX_UNWEIGHTED_LOCAL_STABILITY['comparison_count']}", "Sign agreement",
+             f"{EX_UNWEIGHTED_LOCAL_STABILITY['sign_agreement']['median']:.6f} [{EX_UNWEIGHTED_LOCAL_STABILITY['sign_agreement']['minimum']:.6f}, {EX_UNWEIGHTED_LOCAL_STABILITY['sign_agreement']['maximum']:.6f}]"],
+            ["Joint local attribution", f"{EX_UNWEIGHTED_LOCAL_STABILITY['comparison_count']}", "Top-3 Jaccard",
+             f"{EX_UNWEIGHTED_LOCAL_STABILITY['top_k_jaccard']['median']:.6f} [{EX_UNWEIGHTED_LOCAL_STABILITY['top_k_jaccard']['minimum']:.6f}, {EX_UNWEIGHTED_LOCAL_STABILITY['top_k_jaccard']['maximum']:.6f}]"],
+        ],
+        col_widths=[4.3*cm, 2.0*cm, 3.4*cm, 6.9*cm]
+    ),
+    p(f"""The split, fitted model, outer-training background, and KernelSHAP seed vary together,
+    so these are joint resampling stability measurements rather than isolated model or explainer
+    sensitivity. For the descriptive weighted model, joint repeat stability has median Spearman
+    rho {EX_WEIGHTED_GLOBAL_STABILITY['spearman_rho']['median']:.6f}
+    [{EX_WEIGHTED_GLOBAL_STABILITY['spearman_rho']['minimum']:.6f},
+    {EX_WEIGHTED_GLOBAL_STABILITY['spearman_rho']['maximum']:.6f}], and local cosine similarity
+    has median {EX_WEIGHTED_LOCAL_STABILITY['cosine_similarity']['median']:.6f}
+    [{EX_WEIGHTED_LOCAL_STABILITY['cosine_similarity']['minimum']:.6f},
+    {EX_WEIGHTED_LOCAL_STABILITY['cosine_similarity']['maximum']:.6f}]. The low minima show
+    why a single explanation should not be presented as universally stable."""),
+    p(f"""A separate fixed-model numerical audit holds the model, background, and 12 rows fixed.
+    At nsamples={EX_PROTOCOL['nsamples']} versus the {EX_NUMERICAL['reference_nsamples']}-sample
+    reference, global Spearman rho is
+    {EX_NUMERICAL_MAIN['global_agreement_to_1024_reference']['spearman_rho']:.6f},
+    Jensen-Shannon similarity is
+    {EX_NUMERICAL_MAIN['global_agreement_to_1024_reference']['jensen_shannon_similarity']:.6f},
+    the top three are identical, and median local cosine similarity is
+    {EX_NUMERICAL_MAIN['local_cosine_to_1024_reference']['median']:.6f}. Seed-to-seed median
+    global rho is {EX_NUMERICAL['seed_global_ranking_stability']['spearman_rho']['median']:.6f}.
+    With l1_reg=0, every audited local explanation retains all 17 features."""),
+    p(f"""In a {EX_PERMUTATION['permutations']:,}-permutation feature-label benchmark,
+    primary Spearman agreement has empirical p={EX_PERMUTATION['empirical_p_values']['spearman_rho']['empirical_p']:.6f}
+    and Jensen-Shannon similarity p={EX_PERMUTATION['empirical_p_values']['jensen_shannon_similarity']['empirical_p']:.6f},
+    while top-3 Jaccard overlap is not unusual (p={EX_PERMUTATION['empirical_p_values']['top_k_jaccard']['empirical_p']:.6f}).
+    This is a narrow descriptive relabelling benchmark, not a population hypothesis test."""),
+    sp(),
+
+    p("5.4 Highest Unweighted OOF SHAP Reliance", H2),
+    data_table(
+        ["Feature", "Proxy weight (rank)", "Unweighted OOF SHAP (rank)", "Weighted OOF SHAP (rank)"],
+        [
+            [row["feature"],
+             f"{row['mean_weighting_proxy']:.6f} (#{row['proxy_rank']})",
+             f"{row['unweighted_oof_shap_reliance']:.6f} (#{row['unweighted_shap_rank']})",
+             f"{row['weighted_oof_shap_reliance']:.6f} (#{row['weighted_shap_rank']})"]
+            for row in EX_TOP_FEATURES
+        ],
+        col_widths=[3.5*cm, 4.1*cm, 4.5*cm, 4.5*cm]
+    ),
+    p("""OOF SHAP reliance is normalised mean absolute attribution. It is not a causal
+    effect, and correlated COCOMO drivers may redistribute attribution. LOC ranks first in
+    both the proxy and primary SHAP result; RELY and TIME rank second and third by unweighted
+    OOF SHAP even though their proxy ranks are lower."""),
+    sp(),
+
+    p("5.5 Relation to Prior Explainability Work", H2),
+    p("""Adding SHAP to software-effort estimation is not by itself novel. Najm, Zakrani,
+    and Marzak (2023) reported model-agnostic explanations for SVR-RBF effort models, and
+    Jayadi, Prasetya, and Widiyaningtyas (2025) applied SHAP to a simpler effort model.
+    This pilot instead evaluates a specific FAHP-proxy/SHAP relationship with repeated,
+    leakage-safe out-of-fold explanations and an unweighted primary comparator. It does not
+    establish a first-in-field claim."""),
+    callout(f"""<b>Interactive-app distinction:</b> the on-screen single-project explanation
+    uses a fixed, outcome-conditioned 50-project background (projects with effort at or below
+    600 PM), nsamples={EX_PROTOCOL['nsamples']}, and l1_reg=0. Its base value is the expected
+    model output over those selected rows, not a representative population mean. The research
+    results above instead use all outer-training rows as each fold's background.""", AMBER_BG, AMBER),
 ]
 
 
 # ── SECTION 6: GENAI ──────────────────────────────────────────────────────────
 story += [
-    p("6. GenAI Productivity Adjustment", H1), rule(BLUE_BDR),
+    p("6. Post-hoc GenAI Sensitivity Scenario", H1), rule(BLUE_BDR),
     p("""COCOMO-81 was published in 1981. Its TOOL cost driver captures the quality
-    of development tools — and at Very High, it reduces effort by at most 17%.
-    That was the best tools could do in 1981. GitHub Copilot was released in 2022."""),
+    of development tools; the multiplier at Very High is 0.83. Modern AI coding tools
+    are not represented in the historical training data."""),
     sp(),
 
-    p("6.1 The Research Evidence", H2),
+    p("6.1 External Sources Used for Illustrative Bounds", H2),
     data_table(
-        ["Study", "n", "Finding", "Effort impact"],
+        ["Source", "Reported setting", "Reported association", "Use here"],
         [
-            ["Peng et al. (2023) — GitHub", "95 developers", "Copilot: 55% faster on isolated coding task (controlled experiment) — full-project gain not measured by this study", "Task-level: −55%"],
-            ["McKinsey Global Institute (2023)", "850 projects", "20–45% productivity gain depending on AI adoption depth (industry report)", "−20–45%"],
-            ["Kalliamvakou (2022) — GitHub blog", "Copilot cohort", "Copilot users merged PRs 26% faster, reported higher satisfaction", "~−26% on PRs"],
-            ["COCOMO-81 TOOL driver", "63 projects", "Very High tools: maximum 17% effort reduction", "max −17%"],
+            ["Peng et al. (2023) — GitHub", "Controlled coding task", "Faster task completion with Copilot; full-project effort was not measured", "Illustrative bound only"],
+            ["McKinsey Global Institute (2023)", "Industry report", "A range of potential developer-productivity effects", "Illustrative bound only"],
+            ["Kalliamvakou (2022) — GitHub blog", "Observed Copilot cohort", "Faster pull-request merging and self-reported experience", "Illustrative bound only"],
+            ["COCOMO-81 TOOL driver", "Historical projects", "Very High TOOL multiplier is 0.83", "Already represented in model input"],
         ],
         col_widths=[4.5*cm, 2.5*cm, 7*cm, 2.6*cm]
     ),
     sp(),
-    callout("""<b>The research gap:</b> No existing effort estimation model — including Sehra et al. (2018),
-    which this tool implements — accounts for modern AI coding tools. COCOMO caps at 17%.
-    Studies show 22–55%. Quantifying this gap empirically on your company's data is the
-    novel Mitacs research contribution.""", PURPLE_BG, PURPLE),
+    callout("""<b>Research question:</b> Sehra et al. (2019) did not evaluate modern AI-tool
+    signals. The multipliers below are external, post-hoc scenarios rather than learned effects.
+    Estimating any AI-associated change from company projects with recorded effort would be a
+    future empirical contribution; this prototype does not claim that result yet.""", PURPLE_BG, PURPLE),
     sp(),
 
     p("6.2 How the Adjustment Works", H2),
@@ -611,38 +693,40 @@ story += [
         ],
         col_widths=[6*cm, 3.5*cm, 3*cm, 4.1*cm]
     ),
-    p("""The range is shown as a confidence band in the UI, reflecting the study variation.
-    A "Heavy AI" team of 50 that would have needed 200 PM is estimated at
-    200 × 0.62 = <b>124 PM</b>, saving 76 PM (38%). The 80% prediction interval
-    propagates through: 200 × 0.55 = 110 PM to 200 × 0.70 = 140 PM."""),
+    p("""The range is shown as a scenario range in the UI, reflecting variation across the cited studies.
+    Under the illustrative "Heavy AI" central multiplier, a 200 PM model output becomes
+    200 × 0.62 = <b>124 PM</b>, a modelled difference of 76 PM (38%). Applying the
+    scenario bounds gives 110–140 PM. These are arithmetic sensitivity results, not a
+    causal forecast or a confidence interval."""),
     sp(),
     p("""<b>Important caveat:</b> These multipliers come from task-level studies and enterprise
     surveys, not from effort estimation research. Applying them to full-project effort
-    estimates involves uncertainty. The central estimate is the research midpoint;
-    real impact depends on your codebase, team adoption rate, and task type."""),
+    estimates is an unvalidated extrapolation. The actual effect depends on the codebase,
+    team, adoption, and task mix and must be measured independently."""),
 ]
 
 
 # ── SECTION 7: GITHUB MODEL ───────────────────────────────────────────────────
 story += [
     p("7. The GitHub-Trained Model", H1), rule(BLUE_BDR),
-    p("""The COCOMO-81 model was trained on 1980s defense software. To show the
-    methodology works on <b>modern software projects</b>, we collected 91 real
-    GitHub repositories and trained the same FAHP + SVR pipeline on their data."""),
+    p("""The COCOMO-81 model was trained on historical defense software. As an exploratory
+    modern-data exercise, 91 public GitHub repositories were used to train an RBF-SVR with
+    supervised correlation-based feature weighting. This is not the same FAHP-LSSVM method as
+    Sehra et al. (2019), and it does not establish industry generalisation."""),
     sp(),
 
     p("7.1 Features", H2),
     data_table(
-        ["Feature", "What it measures", "Why it matters"],
+        ["Feature", "What it measures", "Possible association (not causal)"],
         [
-            ["Contributors",       "Unique people who committed", "More people = more coordination overhead (Brooks's Law)"],
-            ["PR Review Time",     "Avg days from PR open to merge", "Slow reviews = less capable / slower team"],
-            ["PR Merge Rate",      "Fraction of PRs merged", "Low merge rate = rework and wasted effort"],
-            ["Test File Ratio",    "Fraction of files that are tests", "High test coverage = mature engineering practices"],
-            ["Language Count",     "Number of programming languages", "More languages = more context-switching overhead"],
-            ["Commit Frequency",   "Commits per week", "Active development intensity signal"],
-            ["Contributors × Freq","Interaction term", "Large fast-moving teams — captures combined scale"],
-            ["AI Tool Adoption",   "Number of AI tools configured", "Copilot, Cursor, Claude Code, Agents (0–3)"],
+            ["Contributors",       "Unique people who committed", "Team activity and the effort proxy share commit-derived inputs"],
+            ["PR Review Time",     "Avg days from PR open to merge", "May reflect workflow latency or repository practice"],
+            ["PR Merge Rate",      "Fraction of PRs merged", "May reflect review and contribution policy"],
+            ["Test File Ratio",    "Fraction of files that are tests", "Repository-structure signal; not measured test quality"],
+            ["Language Count",     "Number of programming languages", "Repository heterogeneity signal"],
+            ["Commit Frequency",   "Commits per week", "Development-activity signal"],
+            ["Contributors × Freq","Interaction term", "Combined team-activity scale"],
+            ["AI Tool Adoption",   "Number of detectable AI configs", "Configuration presence; adoption intensity is unknown"],
         ],
         col_widths=[3.5*cm, 5.5*cm, 7.6*cm]
     ),
@@ -654,7 +738,7 @@ story += [
     p("""A contributor who commits 10 times in one day still counts as 1 author-day.
     Dividing by 20 converts working days to months (approx. 20 working days/month).
     This is an imperfect proxy — it measures developer presence, not hours of productive
-    work — but it correlates with real project size and effort across the dataset."""),
+    work — and it has not been validated against recorded person-hours."""),
     callout(f"""<b>Sampling ceiling:</b> collection is capped at {PROXY['commit_sample_limit']:,}
     commits per repository, approximately {PROXY['approximate_cap_author_months']:.0f}
     author-months under this proxy. Predictions above that cap are extrapolations and have
@@ -681,9 +765,9 @@ story += [
     A 50-person team each committing once total has very different author_months than 50 people
     each active for months. The r = 0.70 says they are strongly correlated, not identical."""),
     sp(),
-    p("""The low MMRE therefore reflects a genuine team-size → effort signal that cannot be
-    cleanly separated from shared measurement source. Jira-tracked hours as an independent
-    ground truth would remove the overlap and give a clean accuracy figure."""),
+    p("""The low MMRE therefore reflects a predictive association that is entangled with a
+    shared measurement source; it does not establish that team size causes effort. Jira-tracked
+    hours or another independent ground truth would permit a cleaner accuracy evaluation."""),
     callout("""An earlier version of this section reported Spearman(commit_frequency, author_months) = 0.04
     and concluded "no meaningful leakage exists." That figure was computed with Pearson correlation,
     not Spearman. The corrected Spearman values are shown in the table above. The conclusion changes:
@@ -698,7 +782,7 @@ story += [
     bullet("Train on the higher-star partition"),
     bullet("Test on the lower-star partition"),
     bullet("Select hyperparameters with inner five-fold CV on the training partition only"),
-    bullet("Re-fit scalers and FAHP weights entirely on training data"),
+    bullet("Re-fit scalers and supervised correlation weights entirely on training data"),
     sp(),
     data_table(
         ["Validation method", "MMRE", "PRED(25)", "Notes"],
@@ -719,29 +803,48 @@ story += [
 story += [
     p("8. Validation Results", H1), rule(BLUE_BDR),
 
-    p("8.1 Ablation Study — Does FAHP Actually Help?", H2),
+    p("8.1 Ablation Study — Does Training-Derived Weighting Help?", H2),
     p("""A fair ablation must give the unweighted baseline its OWN hyperparameter search.
-    Reusing the C/gamma/epsilon tuned for the FAHP-weighted feature space cripples the
+    Reusing the C/gamma/epsilon tuned for the weighted feature space disadvantages the
     baseline and inflates the apparent benefit. Below, each variant is independently
     tuned over the same grid, with leakage-free nested evaluation:"""),
     data_table(
-        ["Model variant", "Nested-CV MMRE", "FAHP comparison"],
+        ["Model variant", "Nested-CV MMRE", "Weighting comparison"],
         [
-            ["Plain SVR (no FAHP, independently tuned)", f"{C_FAHP['unweighted_mmre']:.4f}", "baseline"],
-            ["FAHP-Weighted SVR", f"{C_FAHP['weighted_mmre']:.4f}", f"{C_FAHP['effect_pct']:.1f}% lower MMRE in this comparison"],
+            ["Plain SVR (unweighted, independently tuned)", f"{C_FAHP['unweighted_mmre']:.4f}", "baseline"],
+            ["Proxy-weighted SVR", f"{C_FAHP['weighted_mmre']:.4f}", f"{C_FAHP['effect_pct']:.1f}% lower MMRE in this comparison"],
         ],
         col_widths=[8*cm, 3*cm, 5.6*cm]
     ),
-    p(f"""In matched nested validation, FAHP weighting changes COCOMO-81 MMRE by
+    p(f"""In matched nested validation, training-derived proxy weighting changes COCOMO-81 MMRE by
     <b>{C_FAHP['effect_pct']:.1f}%</b> ({C_FAHP['unweighted_mmre']:.4f} to
     {C_FAHP['weighted_mmre']:.4f}). This is a sample-specific comparison, not proof that
     weighting improves every future dataset."""),
+    p(f"""Across the {EX_REPEAT_ACCURACY['repeat_count']} repeated 5-outer/3-inner runs used
+    for the explainability study, the weighted model has lower MMRE in
+    {EX_REPEAT_ACCURACY['weighted_better_repeat_count']}/{EX_REPEAT_ACCURACY['repeat_count']}
+    repeats. Median weighted MMRE is {EX_REPEAT_ACCURACY['weighted_mmre']['median']:.6f}
+    [{EX_REPEAT_ACCURACY['weighted_mmre']['minimum']:.6f}, {EX_REPEAT_ACCURACY['weighted_mmre']['maximum']:.6f}],
+    versus {EX_REPEAT_ACCURACY['unweighted_mmre']['median']:.6f}
+    [{EX_REPEAT_ACCURACY['unweighted_mmre']['minimum']:.6f}, {EX_REPEAT_ACCURACY['unweighted_mmre']['maximum']:.6f}]
+    unweighted. The median paired difference (unweighted minus weighted) is
+    {EX_REPEAT_ACCURACY['paired_mmre_difference_unweighted_minus_weighted']['median']:+.6f}
+    [{EX_REPEAT_ACCURACY['paired_mmre_difference_unweighted_minus_weighted']['minimum']:+.6f},
+    {EX_REPEAT_ACCURACY['paired_mmre_difference_unweighted_minus_weighted']['maximum']:+.6f}].
+    Median MdMRE is {EX_REPEAT_ACCURACY['weighted_mdmre']['median']:.6f} weighted versus
+    {EX_REPEAT_ACCURACY['unweighted_mdmre']['median']:.6f} unweighted, with paired difference
+    {EX_REPEAT_ACCURACY['paired_mdmre_difference_unweighted_minus_weighted']['median']:+.6f}.
+    Median MAE is {EX_REPEAT_ACCURACY['weighted_mae_person_months']['median']:.6f} versus
+    {EX_REPEAT_ACCURACY['unweighted_mae_person_months']['median']:.6f} person-months, with paired
+    difference {EX_REPEAT_ACCURACY['paired_mae_difference_unweighted_minus_weighted_person_months']['median']:+.6f} PM.
+    Repeated partitions overlap and are not independent inferential units, so this is descriptive;
+    no uncorrected significance test is claimed."""),
     sp(),
     p(f"""<b>GitHub comparison:</b> the independently tuned unweighted model scores
     {G_FAHP['unweighted_mmre']:.4f}, while the weighted model scores
     {G_FAHP['weighted_mmre']:.4f}, a {G_FAHP['effect_pct']:.1f}% lower MMRE in these
     nested folds. The result is reported as a comparison because it does not establish
-    a universal causal improvement from FAHP."""),
+    a universal causal improvement from feature weighting."""),
     sp(),
 
     p("8.2 Cross-Dataset Generalisation (NASA-93)", H2),
@@ -834,7 +937,7 @@ story += [
     p("Step 3 — SVR Prediction (What the Model Actually Returns)", H2),
     p("""The SVR doesn't use the COCOMO formula directly. It:"""),
     bullet("Converts the raw inputs (LOC, 15 multipliers, dev mode ordinal) to a feature vector"),
-    bullet("Log-transforms, MinMax-scales, and FAHP-weights the vector"),
+    bullet("Log-transforms, MinMax-scales, and applies the training-derived proxy weights"),
     bullet("Passes it through the trained RBF kernel SVR"),
     bullet("Inverse-scales and expm1 transforms back to person-months"),
     p("""For these exact inputs the model returns <b>111 PM</b> — nearly identical to the
@@ -845,50 +948,51 @@ story += [
     moderate and the two methods agree."""),
     sp(),
 
-    p("Step 4 — SHAP Decomposition (real model output, seed=42, representative background n=50)", H2),
-    p("""Background: the 50 training projects with effort ≤ 600 PM (the 80th percentile).
-    The 13 excluded projects are 1980s defence mega-programs (up to 11,400 PM) that skew the
-    arithmetic mean to 620 PM — not representative of modern commercial software.
-    The resulting base value is <b>115.8 PM</b>, close to the geometric mean (127 PM),
-    and the SHAP values are in PM units throughout. Additivity verified: 0.00% error."""),
+    p("Step 4 — Illustrative Local SHAP Snapshot (seed=42, fixed background n=50)", H2),
+    p("""Background: the 50 training projects with effort ≤ 600 PM, selected for a responsive
+    display explanation. Because that selection uses the outcome, this background is illustrative
+    rather than representative. The resulting base value in the frozen run is <b>115.8 PM</b>,
+    and the SHAP values are model-output attributions in PM units. This frozen example had
+    0.00 PM stored additivity error; it is not the repeated OOF experiment in Section 5."""),
     sp(),
     data_table(
         ["Feature", "SHAP value", "Reading"],
         [
-            ["LOC (40 KLOC)",  "+69.7 PM",  "40 KLOC is larger than the typical background project — main effort driver"],
-            ["RELY (High)",    "+14.0 PM",  "Financial stakes push above baseline"],
-            ["DevMode (Semi)", "+7.6 PM",   "Semi-detached slightly above the mixed background average"],
-            ["TOOL (High)",    "−23.5 PM",  "Good tooling pulls effort down"],
-            ["TIME (Nominal)", "−21.8 PM",  "No tight latency SLA — typical background has more pressure"],
-            ["TURN (Low)",     "−15.1 PM",  "Fast CI/CD reduces friction"],
-            ["PCAP (High)",    "−12.4 PM",  "Strong developers are faster than background average"],
-            ["VEXP (High)",    "−11.3 PM",  "Cloud-experienced team"],
-            ["ACAP (High)",    "−7.7 PM",   "Strong architects reduce effort"],
-            ["MODP (High)",    "−4.6 PM",   "Good engineering practices"],
-            ["All others",     "0.0 PM",    "DATA, CPLX, STOR, VIRT, AEXP, LEXP, SCED — negligible vs background"],
-            ["Baseline",       "115.8 PM",  "Mean prediction over 50 representative training projects (seed=42, stable)"],
-            ["<b>Total</b>",   "<b>110.8 PM</b>", "115.8 − 5.0 = 110.8  ·  additivity: 0.00% error"],
+            ["LOC (40 KLOC)",  "+69.7 PM",  "Raises this model output relative to the fixed background"],
+            ["RELY (High)",    "+14.0 PM",  "Raises this model output relative to the fixed background"],
+            ["DevMode (Semi)", "+7.6 PM",   "Raises this model output relative to the fixed background"],
+            ["TOOL (High)",    "−23.5 PM",  "Lowers this model output relative to the fixed background"],
+            ["TIME (Nominal)", "−21.8 PM",  "Lowers this model output relative to the fixed background"],
+            ["TURN (Low)",     "−15.1 PM",  "Lowers this model output relative to the fixed background"],
+            ["PCAP (High)",    "−12.4 PM",  "Lowers this model output relative to the fixed background"],
+            ["VEXP (High)",    "−11.3 PM",  "Lowers this model output relative to the fixed background"],
+            ["ACAP (High)",    "−7.7 PM",   "Lowers this model output relative to the fixed background"],
+            ["MODP (High)",    "−4.6 PM",   "Lowers this model output relative to the fixed background"],
+            ["All others",     "0.0 PM",    "Negligible attribution for this input/background/model combination"],
+            ["Baseline",       "115.8 PM",  "Expected model output over the selected 50-project display background (seed=42)"],
+            ["<b>Total</b>",   "<b>110.8 PM</b>", "Frozen illustrative run: 115.8 − 5.0 = 110.8; rounded additivity residual 0.00%"],
         ],
         col_widths=[3.5*cm, 2.5*cm, 10.6*cm]
     ),
     sp(),
 
-    p("Step 5 — Schedule and Team", H2),
+    p("Step 5 — Indicative Schedule and Staffing Ratio", H2),
     formula_box("Calendar months = 2.5 × 111^0.38 = 2.5 × 5.98 ≈ 15 months"),
-    formula_box("Recommended team = 111 / 15 ≈ 7 engineers"),
+    formula_box("Implied average staffing = 111 / 15 ≈ 7 engineers"),
     sp(),
 
-    p("Step 6 — GenAI Adjustment (Copilot adopted)", H2),
-    formula_box("AI effort = 111 × 0.78 = 87 PM   (22% reduction)"),
+    p("Step 6 — Post-hoc GenAI Sensitivity Scenario", H2),
+    formula_box("Scenario effort = 111 × 0.78 = 87 PM   (assumed 22% multiplier)"),
     formula_box("AI calendar = 2.5 × 87^0.38 = 2.5 × 5.46 ≈ 14 months   |   AI team = 6 engineers"),
     formula_box(f"80% PI: 111 / (1 + {C_PI['q90']:+.3f}) = {111/(1+C_PI['q90']):.0f} PM  to  111 / (1 + {C_PI['q10']:+.3f}) = {111/(1+C_PI['q10']):.0f} PM"),
     callout(f"""<b>Summary for the FinTech API project (illustrative model output):</b><br/>
-    SVR prediction: 110.8 PM  ·  COCOMO: 107 PM  ·  Models converge (well-calibrated inputs)<br/>
+    SVR prediction: 110.8 PM  ·  COCOMO: 107 PM  ·  estimates are close for this illustrative input<br/>
     Without AI: 111 PM, 15 months, 7 engineers<br/>
-    With Copilot: 87 PM, 14 months, 6 engineers (saves ~24 PM = 22%)<br/>
+    With the assumed Copilot adjustment: 87 PM, 14 months, 6 engineers (modelled difference ~24 PM = 22%; not a causal forecast)<br/>
     80% empirical interval: {111/(1+C_PI['q90']):.0f}–{111/(1+C_PI['q10']):.0f} PM (wide — reflects genuine estimation uncertainty)<br/>
-    SHAP baseline: 115.8 PM (mean over 50 representative training projects, seed=42)<br/>
-    Top effort driver: LOC (+69.7 PM); top reducers: TOOL (−23.5 PM), TIME (−21.8 PM)""",
+    SHAP baseline: 115.8 PM (expected model output over the selected 50-project display background, seed=42)<br/>
+    Largest positive local attribution: LOC (+69.7 PM); largest negative local attributions:
+    TOOL (−23.5 PM), TIME (−21.8 PM)""",
     GREEN_BG, GREEN),
 ]
 
@@ -904,8 +1008,10 @@ story += [
     p("10.1 COCOMO-81 Model", H2),
     bullet("<b>Training data age:</b> 63 projects from the 1980s, mostly defense/aerospace. The model has never seen React, microservices, CI/CD, or cloud-native development."),
     bullet("<b>LOC as a proxy:</b> Modern teams often work with story points, not LOC. The model accepts LOC as a proxy for scope — use sprint velocity × total sprints as an approximation."),
-    bullet("<b>Solver differences:</b> Sehra et al. (2018) used LSSVM; this implementation uses sklearn SVR. The weighted-kernel formulation is faithful; the solver is an acknowledged simplification."),
-    bullet("<b>FAHP weight derivation:</b> Expert pairwise comparisons are replaced with Spearman correlation ratios — a data-driven proxy. In a full implementation, domain experts would provide the comparisons directly."),
+    bullet("<b>Not a reproduction:</b> Sehra et al. (2019) used FAHP-weighted LSSVM; this implementation uses sklearn epsilon-SVR with a mathematically analogous weighted RBF transformation."),
+    bullet("<b>Weight derivation:</b> Independent expert pairwise comparisons are replaced with a supervised, data-derived FAHP-inspired proxy. A faithful replication-and-extension study requires the original judgements or a documented new expert panel."),
+    bullet(f"<b>Proxy sparsity and consistency:</b> Full-data Chang extent weights are nonzero for {EX_PROXY_DIAGNOSTICS['effort_project_weights_nonzero']}/{EX_PROXY_DIAGNOSTICS['project_count']} effort projects, {EX_PROXY_DIAGNOSTICS['loc_project_weights_nonzero']}/{EX_PROXY_DIAGNOSTICS['project_count']} LOC projects, and {EX_PROXY_DIAGNOSTICS['combined_project_weights_nonzero']}/{EX_PROXY_DIAGNOSTICS['project_count']} combined weights. The effort/LOC pairwise consistency ratios are {EX_PROXY_DIAGNOSTICS['effort_pairwise_consistency_ratio']:.6f}/{EX_PROXY_DIAGNOSTICS['loc_pairwise_consistency_ratio']:.6f}; proxy sensitivity and genuine expert elicitation remain necessary for confirmation."),
+    bullet("<b>SHAP scope:</b> Attributions are relative to a chosen training background and are not causal evidence. Correlated COCOMO drivers may redistribute attribution; dependence-aware sensitivity analysis remains future work."),
     bullet("<b>Size-response compression.</b> The model's effort response to project size is slightly sublinear — the effective in-range exponent is ~0.88, versus COCOMO-81's 1.05 — a consequence of RBF-kernel smoothing pulling predictions toward the training distribution. Within the training range this is minor, but the compression intensifies with distance from the data: beyond the largest training projects it produces systematic under-prediction (the basis for the extrapolation warning at 73 KLOC in Organic mode). Large-project estimates should therefore be read as lower bounds, and inputs beyond the per-mode training range treated as unreliable rather than merely uncertain."),
     sp(),
 
@@ -918,7 +1024,7 @@ story += [
 
     p("10.3 GenAI Multipliers", H2),
     bullet("<b>Post-hoc adjustment:</b> Multipliers are applied to total effort. AI tools primarily help with coding-specific tasks (code completion, test generation); planning, stakeholder management, and architecture work may see less benefit."),
-    bullet("<b>Study variation:</b> The 22–55% range is wide. Task type, codebase complexity, and team adoption rate all moderate the effect. Use the central estimate for planning; use the range for risk scenarios."),
+    bullet("<b>Study variation:</b> The illustrative range is wide and mixes evidence types. Treat it as sensitivity analysis, not a planning estimate; validate any effect on independent completed-project data."),
     bullet("<b>COCOMO TOOL interaction:</b> The TOOL driver already accounts for some tooling quality. Using both TOOL at Very High and a Heavy AI multiplier may double-count some benefit."),
     sp(),
 
@@ -942,7 +1048,7 @@ story += [
     bullet("Learn your team's specific velocity, not a 1981 average"),
     bullet("Identify which COCOMO drivers actually predict overruns <i>for you</i>"),
     bullet("Discover your chronically underestimated project types"),
-    bullet("Quantify how much AI tool adoption is actually saving your team (not a study estimate)"),
+    bullet("Estimate AI-tool associations using independently recorded adoption and completed-project effort"),
     sp(),
 
     p("11.1 What Can Be Claimed Today", H2),
@@ -971,7 +1077,7 @@ story += [
         ["Phase", "Timeline", "Deliverable"],
         [
             ["Data collection & feature engineering", "Month 1–2", "Clean dataset with effort ground truth + feature set"],
-            ["Model training & validation",           "Month 3",   "FAHP-SVR model, SHAP integration, nested validation and chronological hold-out when dates permit"],
+            ["Model training & validation",           "Month 3",   "Weighted-SVR adaptation, repeated OOF KernelSHAP, nested validation and chronological hold-out when dates permit"],
             ["Deployment & handoff",                  "Month 4",   "Live interactive dashboard on your internal infrastructure, documentation, maintenance guide — no sensitive data leaves your environment"],
         ],
         col_widths=[6*cm, 2.5*cm, 8.1*cm]
@@ -988,10 +1094,6 @@ story += [
         ],
         col_widths=[4*cm, 3*cm, 9.6*cm]
     ),
-    callout("""<b>Next step:</b> Use the app's downloadable template and local validator.
-    A feasibility review can assess completeness and target quality, but achievable MMRE is
-    established only by leakage-free validation on the resulting dataset.""", GREEN_BG, GREEN),
-    sp(12),
 ]
 
 
@@ -1004,12 +1106,14 @@ story += [
             ["Boehm, B.W. (1981). Software Engineering Economics. Prentice Hall.", "COCOMO-81 model, cost drivers, EAF"],
             ["Saaty, T.L. (1980). The Analytic Hierarchy Process. McGraw-Hill.", "Foundation of AHP"],
             ["Buckley, J.J. (1985). Fuzzy hierarchical analysis. Fuzzy Sets and Systems, 17(3), 233–247.", "Fuzzy TFN scale for pairwise comparisons"],
-            ["Chang, D.Y. (1996). Applications of the extent analysis method on fuzzy AHP. European Journal of Operational Research, 95(3), 649–655.", "Extent analysis algorithm — FAHP weights"],
-            ["Sehra, S.K., Brar, Y.S., Kaur, N. (2018). Multi-objective optimization for software effort estimation using FAHP and SVR. Soft Computing, 22(8).", "Core methodology this tool implements"],
+            ["Chang, D.Y. (1996). Applications of the extent analysis method on fuzzy AHP. European Journal of Operational Research, 95(3), 649–655.", "Extent-analysis component used in the data-derived proxy"],
+            ["Sehra, S.K., Brar, Y.S., Kaur, N., &amp; Sehra, S.S. (2019). Software effort estimation using FAHP and weighted kernel LSSVM machine. Soft Computing, 23(21), 10881–10900. https://doi.org/10.1007/s00500-018-3639-2", "Foundational FAHP-weighted LSSVM study; this project is an adaptation, not a reproduction"],
             ["Peng, S. et al. (2023). The impact of AI coding assistants on developer productivity: A controlled experiment. GitHub Research.", "55% faster task completion in the controlled experiment"],
             ["McKinsey Global Institute (2023). The economic potential of generative AI.", "20–45% developer productivity gain"],
             ["Kalliamvakou, E. (2022). Research: Quantifying GitHub Copilot's impact on developer productivity. GitHub Blog.", "Copilot PR merge speed study"],
             ["Lundberg, S.M., Lee, S.I. (2017). A unified approach to interpreting model predictions. NeurIPS 30.", "SHAP explainability framework"],
+            ["Najm, A., Zakrani, A., &amp; Marzak, A. (2023). Efficient Shapely Explanation of Support Vector Regression for Agile and Non-agile Software Effort Estimation. Intelligent Sustainable Systems, 711–729. https://doi.org/10.1007/978-981-19-7663-6_67", "Prior model-agnostic explanation of SVR effort estimates"],
+            ["Jayadi, P., Prasetya, D.D., &amp; Widiyaningtyas, T. (2025). Explanation of a Simple Machine Learning Model for Software Effort Estimation using SHAP (SHapley Additive exPlanations). Proc. 9th ICEEIE, 1–5. https://doi.org/10.1109/ICEEIE66203.2025.11254827", "Prior SHAP application in software-effort estimation"],
             ["Stack Overflow Developer Survey (2024). stackoverflow.com/survey", "AI tool adoption statistics"],
             ["GitHub Octoverse (2024). github.com/octoverse", "Copilot code contribution data"],
         ],
@@ -1026,10 +1130,20 @@ doc = SimpleDocTemplate(
     topMargin=MT,  bottomMargin=MB,
     title="Software Effort Estimator — Technical Documentation",
     author="Keshav",
-    subject="FAHP + Weighted-Kernel SVR + SHAP methodology",
+    subject="Sehra et al. (2019)-inspired weighted RBF-SVR and repeated out-of-fold KernelSHAP analysis",
 )
 doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
 shutil.copyfile(OUT, PROJECT_OUT)
+
+html_explainability_rows = "".join(
+    "<tr>"
+    f"<td>{row['feature']}</td>"
+    f"<td>{row['mean_weighting_proxy']:.6f} (#{row['proxy_rank']})</td>"
+    f"<td>{row['unweighted_oof_shap_reliance']:.6f} (#{row['unweighted_shap_rank']})</td>"
+    f"<td>{row['weighted_oof_shap_reliance']:.6f} (#{row['weighted_shap_rank']})</td>"
+    "</tr>"
+    for row in EX_TOP_FEATURES
+)
 
 html_report = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1048,10 +1162,22 @@ th,td{{border:1px solid #ddd;padding:.55rem;text-align:left}} th{{background:#f5
 <tr><td>GitHub popularity hold-out</td><td>{POPULARITY['test_n']} test</td><td>High-star train → low-star test</td><td>{POPULARITY['mmre']:.4f}</td><td>{POPULARITY['pred25']:.1%}</td><td>—</td></tr>
 </tbody></table>
 <p class="note"><strong>Popularity is not time.</strong> The current CSV lacks reliable dates, so the hold-out must not be described as temporal validation. Model selection used only the training partition.</p>
-<h2>FAHP comparison</h2><table><thead><tr><th>Dataset</th><th>Unweighted MMRE</th><th>Weighted MMRE</th><th>Difference</th></tr></thead><tbody>
+<h2>Training-derived weighting comparison</h2><table><thead><tr><th>Dataset</th><th>Unweighted MMRE</th><th>Weighted MMRE</th><th>Difference</th></tr></thead><tbody>
 <tr><td>COCOMO-81</td><td>{C_FAHP['unweighted_mmre']:.4f}</td><td>{C_FAHP['weighted_mmre']:.4f}</td><td>{C_FAHP['effect_pct']:.1f}% lower</td></tr>
 <tr><td>GitHub</td><td>{G_FAHP['unweighted_mmre']:.4f}</td><td>{G_FAHP['weighted_mmre']:.4f}</td><td>{G_FAHP['effect_pct']:.1f}% lower</td></tr>
 </tbody></table><p>These are matched nested-validation comparisons, not a claim of universal improvement.</p>
+<h2>Repeated out-of-fold KernelSHAP pilot</h2>
+<p>The leakage-safe explainability protocol uses {EX_PROTOCOL['repeats']} repeats of {EX_PROTOCOL['outer_splits']} outer folds with {EX_PROTOCOL['inner_splits']} inner folds. Only outer-test projects are explained. Each fold uses all outer-training projects as its background, <code>nsamples={EX_PROTOCOL['nsamples']}</code>, and <code>l1_reg={EX_PROTOCOL['l1_reg']}</code>; all 17 features enter the solution. Maximum stored additivity error is {EXPLAIN['max_additivity_error_person_months']:.6f} person-months.</p>
+<table><thead><tr><th>Comparison</th><th>Spearman rho</th><th>Kendall tau-b</th><th>JS similarity</th><th>Top-3 overlap</th></tr></thead><tbody>
+<tr><td>Primary: training-derived FAHP-inspired proxy vs unweighted OOF SHAP reliance</td><td>{EX_PRIMARY['spearman_rho']:.6f}</td><td>{EX_PRIMARY['kendall_tau_b']:.6f}</td><td>{EX_PRIMARY['jensen_shannon_similarity']:.6f}</td><td>{EX_PRIMARY['top_k_intersection']}/3; Jaccard {EX_PRIMARY['top_k_jaccard']:.6f}</td></tr>
+<tr><td>Weighted model (descriptive; partly induced)</td><td>{EX_WEIGHTED['spearman_rho']:.6f}</td><td>{EX_WEIGHTED['kendall_tau_b']:.6f}</td><td>{EX_WEIGHTED['jensen_shannon_similarity']:.6f}</td><td>{EX_WEIGHTED['top_k_intersection']}/3; Jaccard {EX_WEIGHTED['top_k_jaccard']:.6f}</td></tr>
+</tbody></table>
+<p>Across repeats, the primary Spearman median is {EX_PRIMARY_REPEATS['spearman_rho']['median']:.6f} [{EX_PRIMARY_REPEATS['spearman_rho']['minimum']:.6f}, {EX_PRIMARY_REPEATS['spearman_rho']['maximum']:.6f}]. A {EX_BOOTSTRAP['resamples']:,}-resample project-level percentile procedure gives a conditional {EX_BOOTSTRAP['coverage']:.0%} interval [{EX_BOOTSTRAP['metrics']['spearman_rho']['lower']:.6f}, {EX_BOOTSTRAP['metrics']['spearman_rho']['upper']:.6f}]; it does not refit models, folds, tuning, or the explainer. Joint repeat ranking stability has median Spearman {EX_UNWEIGHTED_GLOBAL_STABILITY['spearman_rho']['median']:.6f} [{EX_UNWEIGHTED_GLOBAL_STABILITY['spearman_rho']['minimum']:.6f}, {EX_UNWEIGHTED_GLOBAL_STABILITY['spearman_rho']['maximum']:.6f}] across {EX_UNWEIGHTED_GLOBAL_STABILITY['pair_count']} repeat pairs. Joint local-attribution cosine similarity has median {EX_UNWEIGHTED_LOCAL_STABILITY['cosine_similarity']['median']:.6f} [{EX_UNWEIGHTED_LOCAL_STABILITY['cosine_similarity']['minimum']:.6f}, {EX_UNWEIGHTED_LOCAL_STABILITY['cosine_similarity']['maximum']:.6f}] across {EX_UNWEIGHTED_LOCAL_STABILITY['comparison_count']} within-project repeat comparisons; split, model, background, and seed vary together.</p>
+<p>The fixed-model numerical audit at {EX_PROTOCOL['nsamples']} versus {EX_NUMERICAL['reference_nsamples']} samples has global Spearman {EX_NUMERICAL_MAIN['global_agreement_to_1024_reference']['spearman_rho']:.6f}, Jensen–Shannon similarity {EX_NUMERICAL_MAIN['global_agreement_to_1024_reference']['jensen_shannon_similarity']:.6f}, identical top three, and median local cosine {EX_NUMERICAL_MAIN['local_cosine_to_1024_reference']['median']:.6f}. In the {EX_PERMUTATION['permutations']:,}-permutation feature-label benchmark, Spearman empirical p={EX_PERMUTATION['empirical_p_values']['spearman_rho']['empirical_p']:.6f} while top-3 Jaccard p={EX_PERMUTATION['empirical_p_values']['top_k_jaccard']['empirical_p']:.6f}; the narrow benchmark is descriptive, not a population hypothesis test.</p>
+<p>Repeated accuracy is descriptive: weighting has lower MMRE in {EX_REPEAT_ACCURACY['weighted_better_repeat_count']}/{EX_REPEAT_ACCURACY['repeat_count']} runs. Median weighted versus unweighted MMRE is {EX_REPEAT_ACCURACY['weighted_mmre']['median']:.6f} versus {EX_REPEAT_ACCURACY['unweighted_mmre']['median']:.6f}; MdMRE is {EX_REPEAT_ACCURACY['weighted_mdmre']['median']:.6f} versus {EX_REPEAT_ACCURACY['unweighted_mdmre']['median']:.6f}; and MAE is {EX_REPEAT_ACCURACY['weighted_mae_person_months']['median']:.6f} versus {EX_REPEAT_ACCURACY['unweighted_mae_person_months']['median']:.6f} person-months. Partitions overlap, so the repeats are not independent inferential units and no uncorrected significance test is reported.</p>
+<table><thead><tr><th>Feature</th><th>Proxy weight (rank)</th><th>Unweighted OOF SHAP (rank)</th><th>Weighted OOF SHAP (rank)</th></tr></thead><tbody>{html_explainability_rows}</tbody></table>
+<p class="note"><strong>Interpretation limit:</strong> SHAP attributes model output relative to a chosen background; it is not causal evidence. The proxy is data-derived rather than an independent expert prior, and weighted-model agreement is partly induced by construction. Full-data Chang extent weights are nonzero for {EX_PROXY_DIAGNOSTICS['effort_project_weights_nonzero']}/{EX_PROXY_DIAGNOSTICS['project_count']} effort, {EX_PROXY_DIAGNOSTICS['loc_project_weights_nonzero']}/{EX_PROXY_DIAGNOSTICS['project_count']} LOC, and {EX_PROXY_DIAGNOSTICS['combined_project_weights_nonzero']}/{EX_PROXY_DIAGNOSTICS['project_count']} combined project weights; expert elicitation remains required for a confirmatory FAHP extension. Prior work already applied SHAP to SVR and simpler software-effort models (DOIs <a href="https://doi.org/10.1007/978-981-19-7663-6_67">10.1007/978-981-19-7663-6_67</a> and <a href="https://doi.org/10.1109/ICEEIE66203.2025.11254827">10.1109/ICEEIE66203.2025.11254827</a>).</p>
+<p>Foundational study: Sehra, S. K., Brar, Y. S., Kaur, N., &amp; Sehra, S. S. (2019). <em>Software effort estimation using FAHP and weighted kernel LSSVM machine</em>. <em>Soft Computing, 23</em>(21), 10881–10900. <a href="https://doi.org/10.1007/s00500-018-3639-2">https://doi.org/10.1007/s00500-018-3639-2</a>. This project is an adaptation, not a reproduction.</p>
 <h2>Prediction interval</h2><p>Signed relative error is <code>(prediction - actual) / actual</code>. The empirical interval is <code>[prediction / (1 + q90), prediction / (1 + q10)]</code>, using pure outer-fold residuals.</p>
 <h2>GitHub effort proxy limitation</h2><p class="note">At most {PROXY['commit_sample_limit']:,} commits are sampled per repository, approximately {PROXY['approximate_cap_author_months']:.0f} author-months. Predictions above that cap are extrapolations and have not been validated.</p>
 <h2>Your Data</h2><p>No accuracy is promised before data is supplied. The app validates CSV/XLSX schemas and provides a template; training is intentionally disabled until completed-project outcomes and sufficient sample size are available.</p>

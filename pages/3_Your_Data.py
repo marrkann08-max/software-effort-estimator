@@ -132,7 +132,7 @@ Before training a custom model:
 1. Freeze the outcome definition: completed-project `actual_effort_hours` from a consistent worklog source.
 2. Choose the predictors before evaluation and remove fields derived from the target.
 3. Use a practical planning heuristic of at least **max(30, 10 × candidate predictors)** completed projects. This is a rule of thumb, not a guarantee; effective sample size also depends on missingness, outliers, and project diversity.
-4. Use nested validation for preprocessing, FAHP weighting, and hyperparameter selection. Use a chronological hold-out when completion dates permit.
+4. Use nested validation for preprocessing, any target-informed feature weighting, and hyperparameter selection. Use a chronological hold-out when completion dates permit.
 5. Report MMRE, PRED(25), PRED(50), interval coverage, and uncertainty. Compare weighted and unweighted models separately.
 
 Sample-size source note: the 10× screen is deliberately presented only as a planning heuristic. [Green (1991)](https://doi.org/10.1207/S15327906MBR2603_7) cautions that fixed sample-size ratios trade statistical specificity for simplicity; a real study should use a design-specific power and validation analysis.

@@ -153,13 +153,13 @@ art         = load(os.path.getmtime(_path))
 METRICS     = model_metrics("github")
 NESTED      = METRICS["nested_cv"]
 POPULARITY  = METRICS["popularity_holdout"]
-FAHP        = METRICS["fahp_comparison"]
+WEIGHTING   = METRICS["fahp_comparison"]  # Legacy metrics key retained for compatibility.
 PROXY       = METRICS["effort_proxy"]
 gh_model    = art["model"]
 gh_scaler_X = art["scaler_X"]
 gh_scaler_y = art["scaler_y"]
 gh_kernel_w = art["kernel_w"]
-gh_fahp_w   = art["fahp_weights"]
+gh_supervised_w = art["fahp_weights"]  # Legacy artifact key; values are supervised Spearman weights.
 gh_feat     = art["feature_names"]
 gh_pi_q10   = METRICS["prediction_interval"]["q10"]
 gh_pi_q90   = METRICS["prediction_interval"]["q90"]
@@ -169,7 +169,7 @@ with st.sidebar:
     st.markdown("""
     <div style='padding:0 0 0.8rem 0;border-bottom:1px solid #1E1E1E;margin-bottom:0.8rem;'>
       <div style='font-size:0.85rem;font-weight:600;color:#DDDDDD;letter-spacing:-0.01em;'>GitHub Effort Model</div>
-      <div style='font-size:0.67rem;color:#555555;margin-top:0.1rem;font-family:monospace;letter-spacing:0.04em;'>FAHP &middot; SVR &middot; Real Projects</div>
+      <div style='font-size:0.67rem;color:#555555;margin-top:0.1rem;font-family:monospace;letter-spacing:0.04em;'>SUPERVISED WEIGHTING &middot; SVR &middot; GITHUB PROXY</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -233,7 +233,7 @@ lo, hi = prediction_interval(effort, gh_pi_q10, gh_pi_q90, minimum=1.0)
 st.markdown(f"""
 <div class="page-header">
   <div class="page-title">GitHub-Trained Effort Model</div>
-  <div class="page-subtitle">FAHP + Weighted-Kernel SVR &nbsp;·&nbsp; Trained on {METRICS['n']} open-source GitHub projects</div>
+  <div class="page-subtitle">Supervised Spearman-weighted SVR &nbsp;·&nbsp; Trained on {METRICS['n']} open-source GitHub projects</div>
   <div>
     <span class="stat-pill-blue">Nested-CV MMRE {NESTED['mmre']:.4f}</span>
     <span class="stat-pill-green">PRED(25) {NESTED['pred25']*100:.0f}%</span>
@@ -246,9 +246,10 @@ st.markdown(f"""
 st.markdown("""<div class='explain-note'>
   <div class='explain-label'>What this model is</div>
   <div class='explain-text'>
-    Same methodology as the COCOMO-81 model — FAHP feature weighting + weighted-kernel SVR —
-    but trained on <strong>real GitHub open-source projects</strong> using signals your team
-    already generates: PR review time, commit frequency, team size, test coverage.
+    This is a <strong>complementary modern-data experiment</strong>, not a direct reproduction
+    of Sehra et al. (2019). It uses supervised weights computed from normalized absolute Spearman
+    correlations with the effort proxy, followed by weighted-kernel SVR, on open-source GitHub
+    signals such as PR review time, commit frequency, team size, and test-file ratio.
     Effort is proxied from sampled commit author-days. Open-source volunteers differ from paid engineers,
     so this is a proof of concept. Company outcomes may be more representative, but their accuracy must be
     measured with held-out completed projects rather than assumed.
@@ -267,21 +268,21 @@ r1.markdown(f"""<div class='metric-card'>
 </div>""", unsafe_allow_html=True)
 r2.markdown(f"""<div class='metric-card'>
     <div class='metric-label'>Nested-CV MMRE</div>
-    <div class='metric-value' style='color:#2563EB;font-size:1.8rem;'>{NESTED['mmre']:.4f}</div>
+    <div class='metric-value' style='color:#2563EB;font-size:1.45rem;white-space:nowrap;'>{NESTED['mmre']:.4f}</div>
     <div class='metric-unit'>10 outer / 5 inner folds</div>
     <div class='metric-range'>PRED(25) = {NESTED['pred25']*100:.0f}%</div>
 </div>""", unsafe_allow_html=True)
 r3.markdown(f"""<div class='metric-card'>
     <div class='metric-label'>Popularity Hold-out</div>
-    <div class='metric-value' style='color:#15803d;font-size:1.8rem;'>{POPULARITY['mmre']:.4f}</div>
+    <div class='metric-value' style='color:#15803d;font-size:1.45rem;white-space:nowrap;'>{POPULARITY['mmre']:.4f}</div>
     <div class='metric-unit'>high-star train → low-star test</div>
     <div class='metric-range'>PRED(25) = {POPULARITY['pred25']*100:.0f}% · n_test={POPULARITY['test_n']}</div>
 </div>""", unsafe_allow_html=True)
 r4.markdown(f"""<div class='metric-card'>
-    <div class='metric-label'>FAHP Comparison</div>
-    <div class='metric-value' style='color:#7c3aed;font-size:1.8rem;'>{FAHP['effect_pct']:+.1f}%</div>
+    <div class='metric-label'>Supervised Weighting</div>
+    <div class='metric-value' style='color:#7c3aed;font-size:1.8rem;'>{WEIGHTING['effect_pct']:+.1f}%</div>
     <div class='metric-unit'>lower MMRE in matched nested CV</div>
-    <div class='metric-range'>Unweighted {FAHP['unweighted_mmre']:.4f} → weighted {FAHP['weighted_mmre']:.4f}</div>
+    <div class='metric-range'>Unweighted {WEIGHTING['unweighted_mmre']:.4f} → weighted {WEIGHTING['weighted_mmre']:.4f}</div>
 </div>""", unsafe_allow_html=True)
 r5.markdown(f"""<div class='metric-card'>
     <div class='metric-label'>Training Repos</div>
@@ -328,29 +329,29 @@ plt.tight_layout(pad=1.2)
 st.pyplot(fig_cb, width="stretch")
 plt.close(fig_cb)
 
-# ── FAHP weights chart ────────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>FAHP Feature Weights — What Drives Effort</div>", unsafe_allow_html=True)
+# ── Supervised association weights chart ─────────────────────────────────────
+st.markdown("<div class='section-header'>Supervised Association Weights — Model Inputs</div>", unsafe_allow_html=True)
 
-order  = np.argsort(gh_fahp_w)
-normed = gh_fahp_w / gh_fahp_w.max()
-fig_fw, ax_fw = plt.subplots(figsize=(7, max(3.5, len(gh_fahp_w) * 0.50)))
+order  = np.argsort(gh_supervised_w)
+normed = gh_supervised_w / gh_supervised_w.max()
+fig_fw, ax_fw = plt.subplots(figsize=(7, max(3.5, len(gh_supervised_w) * 0.50)))
 fig_fw.patch.set_facecolor("white")
 ax_fw.set_facecolor("#FAFAFA")
 bars = ax_fw.barh(
     [gh_feat[i] for i in order],
-    [gh_fahp_w[i] for i in order],
+    [gh_supervised_w[i] for i in order],
     color=[plt.cm.Blues(0.28 + 0.68 * normed[i]) for i in order],
     height=0.62, edgecolor="none",
 )
 for bar, i in zip(bars, order):
     ax_fw.text(
-        gh_fahp_w[i] + gh_fahp_w.max() * 0.012,
+        gh_supervised_w[i] + gh_supervised_w.max() * 0.012,
         bar.get_y() + bar.get_height() / 2,
-        f"{gh_fahp_w[i]:.4f}", va="center", fontsize=8,
+        f"{gh_supervised_w[i]:.4f}", va="center", fontsize=8,
         fontfamily="monospace", color="#374151",
     )
-ax_fw.set_xlabel("FAHP weight", fontsize=8, color="#71717A")
-ax_fw.set_xlim(0, gh_fahp_w.max() * 1.20)
+ax_fw.set_xlabel("Normalized absolute Spearman weight", fontsize=8, color="#71717A")
+ax_fw.set_xlim(0, gh_supervised_w.max() * 1.20)
 for sp in ["top", "right", "left"]: ax_fw.spines[sp].set_visible(False)
 ax_fw.spines["bottom"].set_color("#E4E4E7")
 ax_fw.tick_params(axis="y", labelsize=8.5, colors="#27272A")
@@ -363,9 +364,10 @@ plt.close(fig_fw)
 st.markdown("""<div class='explain-note' style='margin-top:0.5rem;'>
   <div class='explain-label'>Interpretation</div>
   <div class='explain-text'>
-    <strong>Contributors</strong> is the dominant predictor — more people means more coordination overhead and more effort.
-    <strong>Commit Frequency</strong> captures active development intensity. <strong>Test Ratio</strong> reflects
-    engineering maturity. On your company's data, the ranking would shift to reflect your specific team dynamics.
+    <strong>Contributors</strong> receives the largest weight because it has the strongest absolute
+    rank association with the sampled effort proxy in this dataset. <strong>Commit Frequency</strong>
+    and <strong>Test Ratio</strong> are weighted by the same target-informed rule. These weights describe
+    associations used by this model; they are neither expert FAHP judgments nor causal effects.
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -380,9 +382,9 @@ st.markdown(f"""<div class='explain-note' style='border-left-color:#BF6000;'>
     function of — contributor count. A 50-person team each committing once total has very different
     author_months than 50 people each active for months.
     <br><br>
-    The low MMRE therefore reflects a genuine team-size → effort signal that cannot be cleanly
-    separated from shared measurement source. Jira-tracked hours as an independent ground truth
-    would remove the overlap and give a clean accuracy figure.
+    The low MMRE therefore partly reflects a predictive association that cannot be cleanly separated
+    from the shared measurement source. Jira-tracked hours as an independent ground truth would
+    remove this particular overlap and provide a cleaner accuracy estimate.
     <br><br>
     <em>An earlier version of this note reported r = 0.04; that was computed with Pearson, not the
     Spearman used everywhere else in the model. Corrected.</em>
