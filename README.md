@@ -14,6 +14,49 @@ The primary comparison is:
 
 The unweighted model is primary because the proxy weights were not injected into its kernel. Proxy-versus-weighted-model SHAP is reported only as a descriptive secondary comparison; its larger agreement is partly induced by construction.
 
+## Comparison with standard estimators
+
+The first question for any new effort model is whether it beats the established ones. `baselines.py` scores the SVR against intermediate COCOMO-81, COCOMO-81 recalibrated on each training fold, log-linear regression (ridge, penalty chosen by inner CV), and the training median. Every model uses the same 10 outer folds as the reported results, and anything fitted is fitted on outer-training projects only. SA is Standardised Accuracy against random guessing (Shepperd & MacDonell, 2012), and higher is better. MAE and MdAE are in person-months.
+
+**COCOMO-81, 10-fold cross-validation (63 projects)**
+
+| Model | MAE | MdAE | MMRE | MdMRE | Pred(25) | SA |
+|---|---:|---:|---:|---:|---:|---:|
+| SVR, FAHP-proxy weighted (this project) | **149.9** | 24.4 | 0.391 | 0.308 | 0.46 | **0.87** |
+| SVR, unweighted | 213.1 | 28.9 | 0.431 | 0.324 | 0.38 | 0.81 |
+| Intermediate COCOMO-81, published coefficients\* | 184.5 | **20.7** | **0.323** | **0.222** | **0.56** | 0.84 |
+| COCOMO-81 recalibrated per fold | 190.1 | 33.8 | 0.366 | 0.243 | 0.51 | 0.83 |
+| Log-linear regression (ridge, nested) | 243.2 | 34.3 | 0.413 | 0.299 | 0.44 | 0.78 |
+| Training median effort | 648.1 | 86.0 | 2.529 | 0.887 | 0.08 | 0.42 |
+
+\*Boehm derived these coefficients from these same 63 projects, so this row is effectively scored on its own calibration data. The recalibrated row is the fair out-of-sample version.
+
+**NASA93, external test (93 projects; every model fitted on all of COCOMO-81)**
+
+| Model | MAE | MdAE | MMRE | MdMRE | Pred(25) | SA |
+|---|---:|---:|---:|---:|---:|---:|
+| SVR, FAHP-proxy weighted (this project) | **274.5** | **43.6** | **0.518** | 0.296 | 0.46 | **0.68** |
+| Intermediate COCOMO-81, published coefficients | 394.6 | 49.0 | 0.585 | **0.253** | **0.48** | 0.54 |
+| COCOMO-81 recalibrated | 371.3 | 48.2 | 0.577 | 0.288 | 0.40 | 0.56 |
+| Log-linear regression (ridge) | 399.9 | 55.6 | 0.567 | 0.295 | 0.43 | 0.53 |
+| Training median effort | 558.6 | 154.0 | 1.195 | 0.786 | 0.10 | 0.34 |
+
+Paired comparisons use per-project absolute errors: a Wilcoxon signed-rank test, and a 95% bootstrap interval for the MAE difference (projects resampled, models not refitted). Negative means the weighted SVR is better.
+
+| Weighted SVR vs | COCOMO-81 CV: MAE difference [95% CI], p | NASA93: MAE difference [95% CI], p |
+|---|---|---|
+| Published COCOMO-81 | −34.6 [−154.7, +77.5], p = 0.81 | −120.1 [−345.5, +8.8], p = 0.56 |
+| Recalibrated COCOMO-81 | −40.2 [−183.9, +59.2], p = 0.52 | **−96.8 [−254.4, −8.6], p = 0.012** |
+| Log-linear regression | −93.4 [−257.3, +1.0], p = 0.19 | −125.3 [−339.0, −9.4], p = 0.10 |
+| Unweighted SVR | −63.2 [−192.2, +25.9], p = 0.15 | – |
+
+**What this shows:**
+- On COCOMO-81, the weighted SVR has the lowest absolute error, but it is not reliably better than the standard models. The published COCOMO equation has better relative-error scores there, helped by having been fitted to these same projects.
+- On the external NASA93 projects, the SVR transfers best. Its MAE is about 100 person-months lower than every standard model, and it is significantly better than recalibrated COCOMO.
+- The headline claim is therefore better generalisation to unseen projects, not better accuracy on COCOMO-81.
+
+MMRE is reported for comparability with earlier work, but it favours models that underestimate (Foss et al., 2003), so the absolute-error measures and SA should be read first.
+
 ## Explainability protocol and current evidence
 
 The values below are stored under `metrics.json → models → cocomo81 → explainability`:
@@ -65,61 +108,34 @@ The weighting proxy is not independent expert FAHP. On the full data, Chang exte
 - Lundberg, S. M., & Lee, S.-I. (2017). “A unified approach to interpreting model predictions.” *Advances in Neural Information Processing Systems, 30*.
 - Najm, A., Zakrani, A., & Marzak, A. (2023). “Efficient Shapely Explanation of Support Vector Regression for Agile and Non-agile Software Effort Estimation.” In *Intelligent Sustainable Systems*, 711–729. [https://doi.org/10.1007/978-981-19-7663-6_67](https://doi.org/10.1007/978-981-19-7663-6_67)
 - Jayadi, P., Prasetya, D. D., & Widiyaningtyas, T. (2025). “Explanation of a Simple Machine Learning Model for Software Effort Estimation using SHAP (SHapley Additive exPlanations).” *2025 9th International Conference on Electrical, Electronics and Information Engineering (ICEEIE)*, 1–5. [https://doi.org/10.1109/ICEEIE66203.2025.11254827](https://doi.org/10.1109/ICEEIE66203.2025.11254827)
+- Boehm, B. W. (1981). *Software Engineering Economics*. Prentice Hall.
+- Foss, T., Stensrud, E., Kitchenham, B., & Myrtveit, I. (2003). “A simulation study of the model evaluation criterion MMRE.” *IEEE Transactions on Software Engineering, 29*(11), 985–995.
+- Shepperd, M., & MacDonell, S. (2012). “Evaluating prediction systems in software project estimation.” *Information and Software Technology, 54*(8), 820–827.
+- Langdon, W. B., Dolado, J., Sarro, F., & Harman, M. (2016). “Exact mean absolute error of baseline predictor, MARP0.” *Information and Software Technology, 73*, 16–18.
 
-## Quick local run
-
-1. Create and activate a virtual environment (recommended):
+## Run it
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
-
-2. Install dependencies:
-
-```bash
 pip install -r requirements.txt
+streamlit run app.py          # the estimator app
+python train_model.py         # retrain the COCOMO-81 models; rewrites metrics.json and model.pkl
+python baselines.py           # comparison with standard estimators; writes baselines.json (~30 s)
+pip install pytest
+python -m pytest -q           # 31 tests
 ```
 
-3. Run the app:
+## Project layout
 
-```bash
-streamlit run app.py
+```text
+app.py, pages/            Streamlit app: estimator, GitHub-data model, intake of your own data
+train_model.py            nested CV, weighted vs unweighted SVR, NASA93 external test, SHAP extension
+fahp.py                   Chang (1996) extent-analysis FAHP and the training-derived weighting proxy
+validation.py             leakage-safe model selection, metrics, prediction intervals
+baselines.py              standard comparators on the same folds; paired tests
+explainability.py         repeated out-of-fold KernelSHAP analysis
+collect_github.py, train_github_model.py   the 91-repository GitHub proof of concept
+metrics.json, baselines.json               every reported number
+tests/                    unit tests
 ```
-
-## Deploy to Streamlit Community Cloud (recommended)
-
-1. Push this repository to GitHub:
-
-```bash
-git init
-git add .
-git commit -m "Initial commit"
-git branch -M main
-git remote add origin <your-git-repo-url>
-git push -u origin main
-```
-
-2. Go to https://share.streamlit.io, sign in with GitHub, and create a new app by selecting this repository and the `app.py` file. Streamlit Cloud will install dependencies from `requirements.txt` and deploy the app.
-
-## Deploy to Heroku (alternative)
-
-1. Install the Heroku CLI and login:
-
-```bash
-heroku login
-```
-
-2. Create a Heroku app and push:
-
-```bash
-heroku create your-app-name
-git push heroku main
-```
-
-3. Ensure the `Procfile` is present (included) so Heroku runs Streamlit correctly.
-
-## Notes
-
-- Ensure `model.pkl` is committed (or use Git LFS if large).
-- If deployment fails due to binary packages (e.g., `shap`), consider building a smaller runtime or using Docker.

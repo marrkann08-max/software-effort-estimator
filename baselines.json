@@ -1,0 +1,200 @@
+{
+  "n": 63,
+  "mae_random_guessing": 1118.214439324117,
+  "labels": {
+    "svr_weighted": "SVR, FAHP-proxy weighted (this project)",
+    "svr_unweighted": "SVR, unweighted",
+    "cocomo81_published": "Intermediate COCOMO-81, published coefficients",
+    "cocomo81_calibrated": "COCOMO-81 recalibrated per fold",
+    "log_linear_ridge": "Log-linear regression (ridge, nested)",
+    "median_effort": "Training median effort"
+  },
+  "cocomo81_cv": {
+    "svr_weighted": {
+      "mae": 149.87225366680914,
+      "median_absolute_error": 24.370436370774698,
+      "mmre": 0.3910416695866296,
+      "mdmre": 0.3079488019947031,
+      "pred25": 0.4603174603174603,
+      "standardised_accuracy": 0.8659718132799318
+    },
+    "svr_unweighted": {
+      "mae": 213.11389466836064,
+      "median_absolute_error": 28.881465165107045,
+      "mmre": 0.4312369255637182,
+      "mdmre": 0.32373127492432074,
+      "pred25": 0.38095238095238093,
+      "standardised_accuracy": 0.8094158980837582
+    },
+    "cocomo81_published": {
+      "mae": 184.45028272743693,
+      "median_absolute_error": 20.73796778949989,
+      "mmre": 0.32266100360572164,
+      "mdmre": 0.22180023576958896,
+      "pred25": 0.5555555555555556,
+      "standardised_accuracy": 0.8350492747715507
+    },
+    "cocomo81_calibrated": {
+      "mae": 190.07702337907307,
+      "median_absolute_error": 33.768700456466235,
+      "mmre": 0.36640619246435,
+      "mdmre": 0.2434327789394373,
+      "pred25": 0.5079365079365079,
+      "standardised_accuracy": 0.8300173770838074
+    },
+    "log_linear_ridge": {
+      "mae": 243.23047569804768,
+      "median_absolute_error": 34.252414012196965,
+      "mmre": 0.4133615995776346,
+      "mdmre": 0.2994130865775776,
+      "pred25": 0.4444444444444444,
+      "standardised_accuracy": 0.7824831560527302
+    },
+    "median_effort": {
+      "mae": 648.052380952381,
+      "median_absolute_error": 86.0,
+      "mmre": 2.528925020796007,
+      "mdmre": 0.8865116279069768,
+      "pred25": 0.07936507936507936,
+      "standardised_accuracy": 0.42045786732633883
+    }
+  },
+  "paired_vs_svr_weighted": {
+    "svr_unweighted": {
+      "mae_difference": -63.2416410015515,
+      "ci95": [
+        -192.1698413861258,
+        25.901324252748534
+      ],
+      "wilcoxon_p": 0.14477986498177106,
+      "projects_a_better": 36,
+      "n": 63
+    },
+    "cocomo81_published": {
+      "mae_difference": -34.578029060627784,
+      "ci95": [
+        -154.6638234233118,
+        77.54296914034633
+      ],
+      "wilcoxon_p": 0.8106297868629032,
+      "projects_a_better": 29,
+      "n": 63
+    },
+    "cocomo81_calibrated": {
+      "mae_difference": -40.204769712263925,
+      "ci95": [
+        -183.93479562753396,
+        59.15729828166915
+      ],
+      "wilcoxon_p": 0.5198777995211031,
+      "projects_a_better": 29,
+      "n": 63
+    },
+    "log_linear_ridge": {
+      "mae_difference": -93.35822203123854,
+      "ci95": [
+        -257.34863281657124,
+        0.9608550684913928
+      ],
+      "wilcoxon_p": 0.1910070204017016,
+      "projects_a_better": 34,
+      "n": 63
+    },
+    "median_effort": {
+      "mae_difference": -498.18012728557187,
+      "ci95": [
+        -945.5798807442413,
+        -182.4434544265033
+      ],
+      "wilcoxon_p": 2.1090235844941125e-10,
+      "projects_a_better": 57,
+      "n": 63
+    }
+  },
+  "nasa93_external": {
+    "n": 93,
+    "mae_random_guessing": 849.5685834502102,
+    "svr_weighted": {
+      "mae": 274.5352085993096,
+      "median_absolute_error": 43.5653356395361,
+      "mmre": 0.5175019155396077,
+      "mdmre": 0.29552855417003493,
+      "pred25": 0.46236559139784944,
+      "standardised_accuracy": 0.6768533889466747
+    },
+    "cocomo81_published": {
+      "mae": 394.64806965953056,
+      "median_absolute_error": 48.97920549232107,
+      "mmre": 0.5846482673997244,
+      "mdmre": 0.25267178114602695,
+      "pred25": 0.4838709677419355,
+      "standardised_accuracy": 0.5354723828689467
+    },
+    "cocomo81_calibrated": {
+      "mae": 371.31442675063334,
+      "median_absolute_error": 48.18299326409934,
+      "mmre": 0.5769053304713484,
+      "mdmre": 0.28831732512982106,
+      "pred25": 0.3978494623655914,
+      "standardised_accuracy": 0.5629376674421311
+    },
+    "log_linear_ridge": {
+      "mae": 399.85558927487784,
+      "median_absolute_error": 55.63058722918606,
+      "mmre": 0.5673690227046169,
+      "mdmre": 0.2954489963756525,
+      "pred25": 0.43010752688172044,
+      "standardised_accuracy": 0.5293427781297991
+    },
+    "median_effort": {
+      "mae": 558.605376344086,
+      "median_absolute_error": 154.0,
+      "mmre": 1.1946838371585546,
+      "mdmre": 0.7860262008733624,
+      "pred25": 0.0967741935483871,
+      "standardised_accuracy": 0.34248348252766614
+    }
+  },
+  "nasa93_paired_vs_svr_weighted": {
+    "cocomo81_published": {
+      "mae_difference": -120.11286106022095,
+      "ci95": [
+        -345.46820491499307,
+        8.806655430639058
+      ],
+      "wilcoxon_p": 0.5564318920221321,
+      "projects_a_better": 49,
+      "n": 93
+    },
+    "cocomo81_calibrated": {
+      "mae_difference": -96.77921815132373,
+      "ci95": [
+        -254.37423082903337,
+        -8.64952828551913
+      ],
+      "wilcoxon_p": 0.012415310462801992,
+      "projects_a_better": 59,
+      "n": 93
+    },
+    "log_linear_ridge": {
+      "mae_difference": -125.32038067556823,
+      "ci95": [
+        -339.02844196748697,
+        -9.403157900937275
+      ],
+      "wilcoxon_p": 0.10302902605864911,
+      "projects_a_better": 56,
+      "n": 93
+    },
+    "median_effort": {
+      "mae_difference": -284.0701677447764,
+      "ci95": [
+        -400.7647834119566,
+        -177.4387118897986
+      ],
+      "wilcoxon_p": 3.2204389644297225e-12,
+      "projects_a_better": 79,
+      "n": 93
+    }
+  }
+}
